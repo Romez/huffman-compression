@@ -110,7 +110,11 @@ size_t find_min_node_index(all_nodes_t* all_nodes) {
     return min_node_index;
 }
 
-node_t* build_tree(char* text, size_t text_len, all_nodes_t* all_nodes) {
+void build_codes_table() {
+    
+}
+
+void build_freq_table(char* text, size_t text_len, all_nodes_t* all_nodes) {
     for (size_t i = 0; i < text_len; i++) {
         char c = text[i];
         int node_index = (int)c;
@@ -128,11 +132,21 @@ node_t* build_tree(char* text, size_t text_len, all_nodes_t* all_nodes) {
         node->weight++;
     }
 
+    node_t* last_node = init_node();
+    last_node->c = '\0';
+    last_node->weight = 1;
+
+    all_nodes->nodes[0] = last_node;
+    all_nodes->size++;
+}
+
+node_t* build_tree(all_nodes_t* all_nodes) {
     while(all_nodes->size > 1) {
         size_t min_node_index1 = find_min_node_index(all_nodes);
         node_t* min_node1 = all_nodes->nodes[min_node_index1];
         all_nodes->nodes[min_node_index1] = NULL;
 
+        
         size_t min_node_index2 = find_min_node_index(all_nodes);
         node_t* min_node2 = all_nodes->nodes[min_node_index2];
         all_nodes->nodes[min_node_index2] = NULL;
@@ -186,11 +200,12 @@ void build_prefix_codes(node_t* root, code_t* path, code_t* codes_mapping) {
         codes_mapping[(int)root->c] = *path;
     }
 
+        
     return;
 }
 
 int main() {
-    char* text = "hello world";
+    char* text = "hello world\n";
     size_t text_len = strlen(text);
 
     all_nodes_t all_nodes = {
@@ -198,16 +213,15 @@ int main() {
         .nodes = {0}
     };
 
-    node_t* root = build_tree(text, text_len, &all_nodes);
+    build_freq_table(text, text_len, &all_nodes);
 
-    code_t path = {
-        .code = 0,
-        .size = 0,
-    };
+    node_t* root = build_tree(&all_nodes);
 
-    code_t codes_mapping[256] = {0};
+    code_t path = {0};
 
-    build_prefix_codes(root, &path, codes_mapping);
+    code_t codes_table[256] = {0};
+
+    build_prefix_codes(root, &path, codes_table);
 
     uint64_t compressed[256] = {0};
     write_dest_t compressed_dest = {
@@ -215,10 +229,10 @@ int main() {
         .items = compressed,
     };
 
-    for (size_t i = 0; i < text_len; i++) {
+    for (size_t i = 0; i <= text_len; i++) {
         char c = text[i];
 
-        code_t code = codes_mapping[(int)c];
+        code_t code = codes_table[(int)c];
         write_bits(&compressed_dest, revert_bits(code.code, code.size), code.size);
 
         printf("%c - ", c);
@@ -226,30 +240,33 @@ int main() {
         printf("\n");
     }
 
-    //printf("n %ld\n", compressed[0]);
-
-    // print_bits(compressed[0], 64);
-    // printf("\n");
-
-    //printf("%lld\n", compressed[0]);
-
     read_src_t read_src = {
       .items = compressed,
       .bits_len = 8 * 256,
       .bits_read = 0,
     };
 
-    uint64_t buf = 0;
-    for (size_t i = 0; i < 126; i++) {
-        read_bits(&read_src, &buf, 1);
+    node_t* curr_node = root;
 
-        if (buf) {
-            printf("1");
-        } else {
-            printf("0");
+    uint64_t curr_bit = 0;
+    for (size_t i = 0; i < 126; i++) {
+        read_bits(&read_src, &curr_bit, 1);
+
+        printf("%ld", curr_bit);
+
+        curr_node = curr_bit ? curr_node->right : curr_node->left;
+        
+        if (!curr_node->left && !curr_node->right) {
+            char c = curr_node->c;
+            curr_node = root;
+
+            printf("%c", c);
+            if (c == '\0') {
+                return 0;
+            }
         }
 
-        buf = 0ULL;
+        curr_bit = 0ULL;
     }
     printf("\n");
 
