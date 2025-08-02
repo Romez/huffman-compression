@@ -2,6 +2,7 @@
 #include <string.h>
 #include <stdlib.h>
 #include <sys/types.h>
+#include <stdint.h>
 
 // void compress(char* dest, size_t dest_size, src, src_size);
 // void decompress(dest, dest_size, src, src_size);
@@ -21,19 +22,9 @@ typedef struct {
 } all_nodes_t;
 
 typedef struct {
-    char code[128];
+    uint64_t code;
     int size;
 } path_t;
-
-
-node_t* find_node_by_char(all_nodes_t* all_nodes, char c) {
-    for (size_t i = 0; i < 256; i++) {
-        if (all_nodes->nodes[i]->c == c) {
-            return all_nodes->nodes[i];
-        }
-    }
-    return NULL;
-}
 
 node_t* init_node() {
     node_t* node = malloc(sizeof(node_t));
@@ -112,18 +103,29 @@ node_t* build_tree(char* text, size_t text_len, all_nodes_t* all_nodes) {
 void build_prefix_codes(node_t* root, path_t* path) {
     if (root->left || root->right) {
         if (root->left) {
-            path->code[path->size++] = '0';
+            path->size++;
+            path->code = path->code << 1;
+
             build_prefix_codes(root->left, path);
+            
+            path->code = path->code >> 1;
             path->size--;
         }
 
         if (root->right) {
-            path->code[path->size++] = '1';
+            path->size++;
+            path->code = path->code << 1;
+            path->code++;
+
             build_prefix_codes(root->right, path);
+
+            path->code = path->code >> 1;
             path->size--;
         }
+
+        
     } else {
-        printf("%c (%d) %.*s\n", root->c, path->size, path->size, path->code);
+        printf("%c (%d) %.16b\n", root->c, path->size, path->code);
     }
 
     return;
@@ -137,23 +139,17 @@ int main() {
         .size = 0,
         .nodes = {0}
     };
-    
+
     node_t* root = build_tree(text, text_len, &all_nodes);
 
     path_t path = {
-        .code = {0},
+        .code = 0,
         .size = 0,
     };
 
     build_prefix_codes(root, &path);
 
-    // printf("root %p\n", root);
-    // for (size_t i = 0; i < 256; i++) {
-    //     node_t* node = all_nodes.nodes[i];
-    //     if (node != NULL) {
-    //         printf("%ld) char %c, %d\n", i, node->c, node->weight);
-    //     }
-    // }
+    
 
     return 0;
 }
