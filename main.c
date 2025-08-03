@@ -24,7 +24,17 @@ typedef struct {
 typedef struct {
     uint64_t code;
     int size;
-} path_t;
+} code_t;
+
+void print_bits(uint64_t code, size_t size) {
+    for (int i = size - 1; i >= 0; i--) {
+        uint64_t mask = 1 << i;
+        if (code & mask)
+            printf("1");
+        else
+            printf("0");
+    }
+}
 
 node_t* init_node() {
     node_t* node = malloc(sizeof(node_t));
@@ -100,14 +110,14 @@ node_t* build_tree(char* text, size_t text_len, all_nodes_t* all_nodes) {
     return root;
 }
 
-void build_prefix_codes(node_t* root, path_t* path) {
+void build_prefix_codes(node_t* root, code_t* path, code_t* codes_mapping) {
     if (root->left || root->right) {
         if (root->left) {
             path->size++;
             path->code = path->code << 1;
 
-            build_prefix_codes(root->left, path);
-            
+            build_prefix_codes(root->left, path, codes_mapping);
+
             path->code = path->code >> 1;
             path->size--;
         }
@@ -117,15 +127,15 @@ void build_prefix_codes(node_t* root, path_t* path) {
             path->code = path->code << 1;
             path->code++;
 
-            build_prefix_codes(root->right, path);
+            build_prefix_codes(root->right, path, codes_mapping);
 
             path->code = path->code >> 1;
             path->size--;
         }
 
-        
+
     } else {
-        printf("%c (%d) %.16b\n", root->c, path->size, path->code);
+        codes_mapping[(int)root->c] = *path;
     }
 
     return;
@@ -142,14 +152,26 @@ int main() {
 
     node_t* root = build_tree(text, text_len, &all_nodes);
 
-    path_t path = {
+    code_t path = {
         .code = 0,
         .size = 0,
     };
 
-    build_prefix_codes(root, &path);
+    code_t codes_mapping[256] = {0};
 
-    
+    build_prefix_codes(root, &path, codes_mapping);
+
+    for (size_t i = 0; i < 255; i++) {
+        code_t code = codes_mapping[i];
+        if (code.size) {
+            char c = (char)i;
+            printf("%c (%d) ", c, code.size);
+            print_bits(code.code, code.size);
+            printf("\n");
+        }
+    }
+
+
 
     return 0;
 }
