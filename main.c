@@ -3,6 +3,7 @@
 #include <stdlib.h>
 #include <sys/types.h>
 #include <stdint.h>
+#include <stdbool.h>
 
 // void compress(char* dest, size_t dest_size, src, src_size);
 // void decompress(dest, dest_size, src, src_size);
@@ -36,6 +37,16 @@ typedef struct {
     void* items;
     size_t bits_written;
 } write_dest_t;
+
+uint64_t revert_bits(uint64_t code, size_t size) {
+    uint64_t result = 0;
+    for (size_t i = 0; i < size; i++) {
+        if (code & (1 << i)) {
+            result |= (1 << (size - i - 1));
+        }
+    }
+    return result;
+}
 
 void read_bits(read_src_t* src, uint64_t* dest, size_t n) {
     int off = src->bits_read & 7;
@@ -208,33 +219,19 @@ int main() {
         char c = text[i];
 
         code_t code = codes_mapping[(int)c];
-        write_bits(&compressed_dest, code.code, code.size);
+        write_bits(&compressed_dest, revert_bits(code.code, code.size), code.size);
 
         printf("%c - ", c);
         print_bits(code.code, code.size);
         printf("\n");
     }
 
-    //printf("n %lld\n", compressed[0]);
+    //printf("n %ld\n", compressed[0]);
 
-    //print_bits(compressed[0], 64);
-    //printf("\n");
+    // print_bits(compressed[0], 64);
+    // printf("\n");
 
     //printf("%lld\n", compressed[0]);
-
-    /*
-    for (size_t i = 0; i < 255; i++) {
-        code_t code = codes_mapping[i];
-        if (code.size) {
-            // char c = (char)i;
-            //printf("%c (%d) ", c, code.size);
-            //print_bits(code.code, code.size);
-            //printf("\n");
-
-
-        }
-    }
-    */
 
     read_src_t read_src = {
       .items = compressed,
