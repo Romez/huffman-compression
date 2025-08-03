@@ -26,13 +26,50 @@ typedef struct {
     int size;
 } code_t;
 
+typedef struct {
+    void* items;
+    size_t bits_len;
+    size_t bits_read;
+} read_src_t;
+
+typedef struct {
+    void* items;
+    size_t bits_written;
+} write_dest_t;
+
+void read_bits(read_src_t* src, uint64_t* dest, size_t n) {
+    int off = src->bits_read & 7;
+    uint64_t mask = (1 << n) - 1;
+
+    int item_index = src->bits_read >> 3;
+    uint8_t* item = &((uint8_t*)src->items)[item_index];
+    uint64_t block = *(uint64_t*)item;
+
+    *dest = ((block >> off) & mask);
+
+    src->bits_read += n;
+}
+
+void write_bits(write_dest_t* dest, uint64_t block, size_t n) {
+    int rem = dest->bits_written & 7;
+
+    uint8_t* items = &((uint8_t*)dest->items)[dest->bits_written >> 3];
+    uint64_t* item = (uint64_t*)items;
+
+    *item = *item | (block << rem);
+    dest->bits_written += n;
+}
+
 void print_bits(uint64_t code, size_t size) {
-    for (int i = size - 1; i >= 0; i--) {
-        uint64_t mask = 1 << i;
-        if (code & mask)
+    uint64_t mask = 1ULL << (size - 1);
+
+    for (int i = 0; i < size; i++) {
+        if (code & mask) {
             printf("1");
-        else
+        } else {
             printf("0");
+        }
+        mask = mask >> 1;
     }
 }
 
@@ -161,17 +198,63 @@ int main() {
 
     build_prefix_codes(root, &path, codes_mapping);
 
+    uint64_t compressed[256] = {0};
+    write_dest_t compressed_dest = {
+        .bits_written = 0,
+        .items = compressed,
+    };
+
+    for (size_t i = 0; i < text_len; i++) {
+        char c = text[i];
+
+        code_t code = codes_mapping[(int)c];
+        write_bits(&compressed_dest, code.code, code.size);
+
+        printf("%c - ", c);
+        print_bits(code.code, code.size);
+        printf("\n");
+    }
+
+    //printf("n %lld\n", compressed[0]);
+
+    //print_bits(compressed[0], 64);
+    //printf("\n");
+
+    //printf("%lld\n", compressed[0]);
+
+    /*
     for (size_t i = 0; i < 255; i++) {
         code_t code = codes_mapping[i];
         if (code.size) {
-            char c = (char)i;
-            printf("%c (%d) ", c, code.size);
-            print_bits(code.code, code.size);
-            printf("\n");
+            // char c = (char)i;
+            //printf("%c (%d) ", c, code.size);
+            //print_bits(code.code, code.size);
+            //printf("\n");
+
+
         }
     }
+    */
 
+    read_src_t read_src = {
+      .items = compressed,
+      .bits_len = 8 * 256,
+      .bits_read = 0,
+    };
 
+    uint64_t buf = 0;
+    for (size_t i = 0; i < 126; i++) {
+        read_bits(&read_src, &buf, 1);
+
+        if (buf) {
+            printf("1");
+        } else {
+            printf("0");
+        }
+
+        buf = 0ULL;
+    }
+    printf("\n");
 
     return 0;
 }
