@@ -29,7 +29,6 @@ typedef struct {
 
 typedef struct {
     void* items;
-    size_t bits_len;
     size_t bits_read;
 } read_src_t;
 
@@ -62,12 +61,11 @@ void read_bits(read_src_t* src, uint64_t* dest, size_t n) {
 }
 
 void write_bits(write_dest_t* dest, uint64_t block, size_t n) {
-    int rem = dest->bits_written & 7;
-
     uint8_t* items = &((uint8_t*)dest->items)[dest->bits_written >> 3];
     uint64_t* item = (uint64_t*)items;
 
-    *item = *item | (block << rem);
+    int rem = dest->bits_written & 7;
+    *item |= (block << rem);
     dest->bits_written += n;
 }
 
@@ -108,10 +106,6 @@ size_t find_min_node_index(all_nodes_t* all_nodes) {
     }
 
     return min_node_index;
-}
-
-void build_codes_table() {
-    
 }
 
 void build_freq_table(char* text, size_t text_len, all_nodes_t* all_nodes) {
@@ -209,8 +203,8 @@ int main() {
     size_t text_len = strlen(text);
 
     all_nodes_t all_nodes = {
+        .nodes = {0},
         .size = 0,
-        .nodes = {0}
     };
 
     build_freq_table(text, text_len, &all_nodes);
@@ -225,8 +219,8 @@ int main() {
 
     uint64_t compressed[256] = {0};
     write_dest_t compressed_dest = {
-        .bits_written = 0,
         .items = compressed,
+        .bits_written = 0,
     };
 
     for (size_t i = 0; i <= text_len; i++) {
@@ -235,24 +229,24 @@ int main() {
         code_t code = codes_table[(int)c];
         write_bits(&compressed_dest, revert_bits(code.code, code.size), code.size);
 
-        printf("%c - ", c);
-        print_bits(code.code, code.size);
-        printf("\n");
+        // printf("%c - ", c);
+        // print_bits(code.code, code.size);
+        // printf("\n");
     }
 
     read_src_t read_src = {
       .items = compressed,
-      .bits_len = 8 * 256,
       .bits_read = 0,
     };
 
     node_t* curr_node = root;
 
     uint64_t curr_bit = 0;
-    for (size_t i = 0; i < 126; i++) {
+
+    for (;;) {
         read_bits(&read_src, &curr_bit, 1);
 
-        printf("%ld", curr_bit);
+        // printf("%ld", curr_bit);
 
         curr_node = curr_bit ? curr_node->right : curr_node->left;
         
