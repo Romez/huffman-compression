@@ -6,8 +6,7 @@
 #include <stdbool.h>
 #include <assert.h>
 
-
-// void compress(char* dest, size_t dest_size, src, src_size);
+size_t compress(void* dest, size_t dest_size, char* src, size_t src_size);
 // void decompress(dest, dest_size, src, src_size);
 
 typedef struct node_t node_t;
@@ -31,13 +30,8 @@ typedef struct {
 
 typedef struct {
     void* items;
-    size_t bits_read;
-} read_src_t;
-
-typedef struct {
-    void* items;
-    size_t bits_written;
-} write_dest_t;
+    size_t bits_off;
+} bits_src_t;
 
 uint64_t revert_bits(uint64_t code, size_t size) {
     uint64_t result = 0;
@@ -49,26 +43,26 @@ uint64_t revert_bits(uint64_t code, size_t size) {
     return result;
 }
 
-void read_bits(read_src_t* src, uint64_t* dest, size_t n) {
-    int off = src->bits_read & 7;
+void read_bits(bits_src_t* src, uint64_t* dest, size_t n) {
+    int off = src->bits_off & 7;
     uint64_t mask = (1 << n) - 1;
 
-    int item_index = src->bits_read >> 3;
+    int item_index = src->bits_off >> 3;
     uint8_t* item = &((uint8_t*)src->items)[item_index];
     uint64_t block = *(uint64_t*)item;
 
     *dest = ((block >> off) & mask);
 
-    src->bits_read += n;
+    src->bits_off += n;
 }
 
-void write_bits(write_dest_t* dest, uint64_t block, size_t n) {
-    uint8_t* items = &((uint8_t*)dest->items)[dest->bits_written >> 3];
+void write_bits(bits_src_t* dest, uint64_t block, size_t n) {
+    uint8_t* items = &((uint8_t*)dest->items)[dest->bits_off >> 3];
     uint64_t* item = (uint64_t*)items;
 
-    int rem = dest->bits_written & 7;
+    int rem = dest->bits_off & 7;
     *item |= (block << rem);
-    dest->bits_written += n;
+    dest->bits_off += n;
 }
 
 void print_bits(uint64_t code, size_t size) {
@@ -110,8 +104,8 @@ size_t find_min_node_index(all_nodes_t* all_nodes) {
     return min_node_index;
 }
 
-void build_freq_table(char* text, size_t text_len, all_nodes_t* all_nodes) {
-    for (size_t i = 0; i <= text_len; i++) {
+void build_freq_table(char* text, size_t text_size, all_nodes_t* all_nodes) {
+    for (size_t i = 0; i <= text_size; i++) {
         unsigned char c = text[i];
         uint8_t node_index = (int)c;
 
@@ -183,35 +177,48 @@ void build_prefix_codes(node_t* root, code_t* path, code_t* codes_mapping) {
     return;
 }
 
-int main() {
-    FILE *fd = fopen("./files/pg11.txt", "r");
-    assert(fd != NULL && "Error open file");
-
+size_t read_file_size(FILE* fd) {
     fseek(fd, 0, SEEK_END);
-    size_t text_len = ftell(fd);
+    size_t text_size = ftell(fd);
     fseek(fd, 0, SEEK_SET);
-    printf("source: %ld bytes\n", text_len);
-    
-    char text[text_len + 1];
-    int read_bytes = fread(text, sizeof(char), text_len, fd);
+    return text_size;
+}
+
+size_t compress(void* dest, size_t dest_size, char* src, size_t src_size) {
+    return 0;
+}
+
+int main() {
+    FILE *fd_in = fopen("./files/pg100.txt", "r");
+    assert(fd_in != NULL && "Error open file");
+
+    size_t text_size = read_file_size(fd_in);
+    printf("source: %ld bytes\n", text_size);
+
+    uint64_t* compressed = malloc(text_size);
+    memset(compressed, 0, text_size);
+
+    char text[text_size + 1];
+    int read_bytes = fread(text, sizeof(char), text_size, fd_in);
 	if (read_bytes == -1) {
 	    perror("read");
 	    exit(EXIT_FAILURE);
 	}
 
-    text[text_len] = '\0';
+    text[text_size] = '\0';
     
-    fclose(fd);
-    
-    //char* text = "hello world\n";
-    //size_t text_len = strlen(text);
+    fclose(fd_in);
+
+    // Compress ------------------
+
+    //size_t compressed_size = compress(compressed, text_size, text, text_size);
 
     all_nodes_t all_nodes = {
         .nodes = {0},
         .size = 0,
     };
 
-    build_freq_table(text, text_len, &all_nodes);
+    build_freq_table(text, text_size, &all_nodes);
 
     node_t* root = build_tree(&all_nodes);
 
@@ -220,15 +227,13 @@ int main() {
     code_t codes_table[256] = {0};
 
     build_prefix_codes(root, &path, codes_table);
-
-    uint64_t* compressed = malloc(text_len);
-    memset(compressed, 0, text_len);
-    write_dest_t compressed_dest = {
+    
+    bits_src_t compressed_dest = {
         .items = compressed,
-        .bits_written = 0,
+        .bits_off = 0,
     };
 
-    for (size_t i = 0; i <= text_len; i++) {
+    for (size_t i = 0; i <= text_size; i++) {
         char c = text[i];
 
         code_t code = codes_table[(int)c];
@@ -239,12 +244,56 @@ int main() {
     //     printf("\n");
     }
 
-    // printf("bytes written %ld\n", compressed_dest.bits_written / 8);
+    size_t compressed_size = compressed_dest.bits_off / 8 + 1;
 
-    exit(1);
-    read_src_t read_src = {
+    // Save compressed to a file
+
+    FILE *fd_out = fopen("./result", "w+");
+    if (fd_out == NULL) {
+        perror("open result file");
+        exit(1);
+    }
+
+    printf("compressed size: %ld bytes\n", compressed_size);
+    size_t written_size = fwrite(compressed, sizeof(char), compressed_size, fd_out);
+    if (written_size < compressed_size) {
+        if (ferror(fd_out)) {
+            perror("write compressed");
+        }
+    }
+
+    // TODO: free the tree
+
+    free(compressed);
+
+    fclose(fd_out);
+
+    // Decompress -------------------
+    fd_in = fopen("./result", "r");
+    if (fd_in == NULL) {
+        perror("open result file");
+        exit(1);
+    }
+
+    compressed_size = read_file_size(fd_in);
+
+    printf("compressed file size %ld bytes\n", compressed_size);
+    
+    compressed = realloc(compressed, compressed_size);
+    assert(compressed != NULL && "malloc read compressed");
+    memset(compressed, 0, compressed_size);
+
+    read_bytes = fread(compressed, sizeof(char), compressed_size, fd_in);
+	if (read_bytes == -1) {
+	    perror("read");
+	    exit(EXIT_FAILURE);
+	}
+
+    printf("bytes read %ld\n", read_bytes);
+
+    bits_src_t read_src = {
       .items = compressed,
-      .bits_read = 0,
+      .bits_off = 0,
     };
 
     node_t* curr_node = root;
@@ -270,6 +319,8 @@ int main() {
 
         curr_bit = 0ULL;
     }
+
+    fclose(fd_in);
     printf("\n");
 
     return 0;
