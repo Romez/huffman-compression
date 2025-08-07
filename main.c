@@ -4,6 +4,8 @@
 #include <sys/types.h>
 #include <stdint.h>
 #include <stdbool.h>
+#include <assert.h>
+
 
 // void compress(char* dest, size_t dest_size, src, src_size);
 // void decompress(dest, dest_size, src, src_size);
@@ -109,10 +111,11 @@ size_t find_min_node_index(all_nodes_t* all_nodes) {
 }
 
 void build_freq_table(char* text, size_t text_len, all_nodes_t* all_nodes) {
-    for (size_t i = 0; i < text_len; i++) {
-        char c = text[i];
-        int node_index = (int)c;
+    for (size_t i = 0; i <= text_len; i++) {
+        unsigned char c = text[i];
+        uint8_t node_index = (int)c;
 
+        // printf("node_index %d\n", node_index);
         node_t* node = all_nodes->nodes[node_index];
 
         if (node == NULL) {
@@ -122,16 +125,9 @@ void build_freq_table(char* text, size_t text_len, all_nodes_t* all_nodes) {
             all_nodes->nodes[node_index] = node;
             all_nodes->size++;
         }
-
+// 
         node->weight++;
     }
-
-    node_t* last_node = init_node();
-    last_node->c = '\0';
-    last_node->weight = 1;
-
-    all_nodes->nodes[0] = last_node;
-    all_nodes->size++;
 }
 
 node_t* build_tree(all_nodes_t* all_nodes) {
@@ -139,7 +135,6 @@ node_t* build_tree(all_nodes_t* all_nodes) {
         size_t min_node_index1 = find_min_node_index(all_nodes);
         node_t* min_node1 = all_nodes->nodes[min_node_index1];
         all_nodes->nodes[min_node_index1] = NULL;
-
         
         size_t min_node_index2 = find_min_node_index(all_nodes);
         node_t* min_node2 = all_nodes->nodes[min_node_index2];
@@ -155,14 +150,7 @@ node_t* build_tree(all_nodes_t* all_nodes) {
         all_nodes->size--;
     }
 
-    node_t* root = NULL;
-    for (size_t i = 0; i < 256; i++) {
-        if (all_nodes->nodes[i] != NULL) {
-            root = all_nodes->nodes[i];
-            break;
-        }
-    }
-
+    node_t* root = all_nodes->nodes[find_min_node_index(all_nodes)];
     return root;
 }
 
@@ -181,26 +169,42 @@ void build_prefix_codes(node_t* root, code_t* path, code_t* codes_mapping) {
         if (root->right) {
             path->size++;
             path->code = path->code << 1;
-            path->code++;
+            path->code |= 1;
 
             build_prefix_codes(root->right, path, codes_mapping);
 
             path->code = path->code >> 1;
             path->size--;
         }
-
-
     } else {
         codes_mapping[(int)root->c] = *path;
     }
-
         
     return;
 }
 
 int main() {
-    char* text = "hello world\n";
-    size_t text_len = strlen(text);
+    FILE *fd = fopen("./files/pg11.txt", "r");
+    assert(fd != NULL && "Error open file");
+
+    fseek(fd, 0, SEEK_END);
+    size_t text_len = ftell(fd);
+    fseek(fd, 0, SEEK_SET);
+    printf("source: %ld bytes\n", text_len);
+    
+    char text[text_len + 1];
+    int read_bytes = fread(text, sizeof(char), text_len, fd);
+	if (read_bytes == -1) {
+	    perror("read");
+	    exit(EXIT_FAILURE);
+	}
+
+    text[text_len] = '\0';
+    
+    fclose(fd);
+    
+    //char* text = "hello world\n";
+    //size_t text_len = strlen(text);
 
     all_nodes_t all_nodes = {
         .nodes = {0},
@@ -217,7 +221,8 @@ int main() {
 
     build_prefix_codes(root, &path, codes_table);
 
-    uint64_t compressed[256] = {0};
+    uint64_t* compressed = malloc(text_len);
+    memset(compressed, 0, text_len);
     write_dest_t compressed_dest = {
         .items = compressed,
         .bits_written = 0,
@@ -229,11 +234,14 @@ int main() {
         code_t code = codes_table[(int)c];
         write_bits(&compressed_dest, revert_bits(code.code, code.size), code.size);
 
-        // printf("%c - ", c);
-        // print_bits(code.code, code.size);
-        // printf("\n");
+    //     printf("%c - ", c);
+    //     print_bits(code.code, code.size);
+    //     printf("\n");
     }
 
+    // printf("bytes written %ld\n", compressed_dest.bits_written / 8);
+
+    exit(1);
     read_src_t read_src = {
       .items = compressed,
       .bits_read = 0,
