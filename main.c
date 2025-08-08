@@ -6,6 +6,8 @@
 #include <stdbool.h>
 #include <assert.h>
 
+#define CODES_TABLE_SIZE sizeof(code_t) * 256
+
 size_t compress(void* dest, size_t dest_size, char* src, size_t src_size);
 // void decompress(dest, dest_size, src, src_size);
 
@@ -25,7 +27,7 @@ typedef struct {
 
 typedef struct {
     uint64_t code;
-    int size;
+    uint64_t size;
 } code_t;
 
 typedef struct {
@@ -254,12 +256,27 @@ int main() {
         exit(1);
     }
 
-    printf("compressed size: %ld bytes\n", compressed_size);
-    size_t written_size = fwrite(compressed, sizeof(char), compressed_size, fd_out);
-    if (written_size < compressed_size) {
+    size_t bytes_written;
+
+    // Write codes table to the beginnig of the file
+    // printf("codes table size: %ld bytes\n", CODES_TABLE_SIZE);
+    // bytes_written = fwrite(codes_table, sizeof(code_t), 256, fd_out);
+    // if (bytes_written < compressed_size) {
+    //     if (ferror(fd_out)) {
+    //         perror("write compressed");
+    //     }
+    //     perror("Not all bytes were written");
+    //     exit(1);
+    // }
+
+    printf("compressed data size: %ld bytes\n", compressed_size);
+    bytes_written = fwrite(compressed, sizeof(char), compressed_size, fd_out);
+    if (bytes_written < compressed_size) {
         if (ferror(fd_out)) {
             perror("write compressed");
         }
+        perror("Not all bytes were written");
+        exit(1);
     }
 
     // TODO: free the tree
@@ -277,8 +294,6 @@ int main() {
 
     compressed_size = read_file_size(fd_in);
 
-    printf("compressed file size %ld bytes\n", compressed_size);
-    
     compressed = realloc(compressed, compressed_size);
     assert(compressed != NULL && "malloc read compressed");
     memset(compressed, 0, compressed_size);
