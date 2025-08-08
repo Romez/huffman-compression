@@ -6,10 +6,12 @@
 #include <stdbool.h>
 #include <assert.h>
 
-#define CODES_TABLE_SIZE sizeof(code_t) * 256
+#define FREQ_TABLE_SIZE 256
 
 size_t compress(void* dest, size_t dest_size, char* src, size_t src_size);
 // void decompress(dest, dest_size, src, src_size);
+
+typedef uint32_t freq_t;
 
 typedef struct node_t node_t;
 
@@ -20,6 +22,7 @@ struct node_t {
     char c;
 };
 
+// TODO: heap
 typedef struct {
     node_t* nodes[256];
     size_t size;
@@ -106,47 +109,54 @@ size_t find_min_node_index(all_nodes_t* all_nodes) {
     return min_node_index;
 }
 
-void build_freq_table(char* text, size_t text_size, all_nodes_t* all_nodes) {
+void build_freq_table(char* text, size_t text_size, freq_t* freq_table) {
     for (size_t i = 0; i <= text_size; i++) {
         unsigned char c = text[i];
         uint8_t node_index = (int)c;
 
-        // printf("node_index %d\n", node_index);
-        node_t* node = all_nodes->nodes[node_index];
-
-        if (node == NULL) {
-            node = init_node();
-            node->c = c;
-
-            all_nodes->nodes[node_index] = node;
-            all_nodes->size++;
-        }
-// 
-        node->weight++;
+        freq_table[node_index]++;
     }
 }
 
-node_t* build_tree(all_nodes_t* all_nodes) {
-    while(all_nodes->size > 1) {
-        size_t min_node_index1 = find_min_node_index(all_nodes);
-        node_t* min_node1 = all_nodes->nodes[min_node_index1];
-        all_nodes->nodes[min_node_index1] = NULL;
+node_t* build_tree(freq_t* freq_table) {
+    all_nodes_t all_nodes = {
+        .nodes = {0},
+        .size = 0,
+    };
+
+    for (int i = 0; i < 256; i++) {
+        if (freq_table[i]) {
+            node_t* node = init_node();
+
+            node->c = (char)i;
+            node->weight = freq_table[i];
+
+            all_nodes.nodes[all_nodes.size++] = node;
+        }
+    }
+
+    // printf("node_index %d\n", node_index);
+
+    while(all_nodes.size > 1) {
+        size_t min_node_index1 = find_min_node_index(&all_nodes);
+        node_t* min_node1 = all_nodes.nodes[min_node_index1];
+        all_nodes.nodes[min_node_index1] = NULL;
         
-        size_t min_node_index2 = find_min_node_index(all_nodes);
-        node_t* min_node2 = all_nodes->nodes[min_node_index2];
-        all_nodes->nodes[min_node_index2] = NULL;
+        size_t min_node_index2 = find_min_node_index(&all_nodes);
+        node_t* min_node2 = all_nodes.nodes[min_node_index2];
+        all_nodes.nodes[min_node_index2] = NULL;
 
         node_t* pair_node = init_node();
         pair_node->left  = min_node1;
         pair_node->right = min_node2;
         pair_node->weight = min_node1->weight + min_node2->weight;
 
-        all_nodes->nodes[min_node_index1] = pair_node;
+        all_nodes.nodes[min_node_index1] = pair_node;
 
-        all_nodes->size--;
+        all_nodes.size--;
     }
 
-    node_t* root = all_nodes->nodes[find_min_node_index(all_nodes)];
+    node_t* root = all_nodes.nodes[find_min_node_index(&all_nodes)];
     return root;
 }
 
@@ -191,152 +201,153 @@ size_t compress(void* dest, size_t dest_size, char* src, size_t src_size) {
 }
 
 int main() {
-    FILE *fd_in = fopen("./files/pg100.txt", "r");
-    assert(fd_in != NULL && "Error open file");
-
-    size_t text_size = read_file_size(fd_in);
-    printf("source: %ld bytes\n", text_size);
-
-    uint64_t* compressed = malloc(text_size);
-    memset(compressed, 0, text_size);
-
-    char text[text_size + 1];
-    int read_bytes = fread(text, sizeof(char), text_size, fd_in);
-	if (read_bytes == -1) {
-	    perror("read");
-	    exit(EXIT_FAILURE);
-	}
-
-    text[text_size] = '\0';
-    
-    fclose(fd_in);
-
     // Compress ------------------
 
     //size_t compressed_size = compress(compressed, text_size, text, text_size);
 
-    all_nodes_t all_nodes = {
-        .nodes = {0},
-        .size = 0,
-    };
-
-    build_freq_table(text, text_size, &all_nodes);
-
-    node_t* root = build_tree(&all_nodes);
-
-    code_t path = {0};
-
-    code_t codes_table[256] = {0};
-
-    build_prefix_codes(root, &path, codes_table);
-    
-    bits_src_t compressed_dest = {
-        .items = compressed,
-        .bits_off = 0,
-    };
-
-    for (size_t i = 0; i <= text_size; i++) {
-        char c = text[i];
-
-        code_t code = codes_table[(int)c];
-        write_bits(&compressed_dest, revert_bits(code.code, code.size), code.size);
-
-    //     printf("%c - ", c);
-    //     print_bits(code.code, code.size);
-    //     printf("\n");
-    }
-
-    size_t compressed_size = compressed_dest.bits_off / 8 + 1;
-
-    // Save compressed to a file
-
-    FILE *fd_out = fopen("./result", "w+");
-    if (fd_out == NULL) {
-        perror("open result file");
-        exit(1);
-    }
-
-    size_t bytes_written;
-
-    // Write codes table to the beginnig of the file
-    // printf("codes table size: %ld bytes\n", CODES_TABLE_SIZE);
-    // bytes_written = fwrite(codes_table, sizeof(code_t), 256, fd_out);
-    // if (bytes_written < compressed_size) {
-    //     if (ferror(fd_out)) {
-    //         perror("write compressed");
-    //     }
-    //     perror("Not all bytes were written");
-    //     exit(1);
-    // }
-
-    printf("compressed data size: %ld bytes\n", compressed_size);
-    bytes_written = fwrite(compressed, sizeof(char), compressed_size, fd_out);
-    if (bytes_written < compressed_size) {
-        if (ferror(fd_out)) {
-            perror("write compressed");
+    {
+        FILE *fd_in = fopen("./files/pg100.txt", "r");
+        if (fd_in == NULL) {
+            perror("open src file");
+            exit(1);
         }
-        perror("Not all bytes were written");
-        exit(1);
+
+        FILE *fd_out = fopen("./result", "w+");
+        if (fd_out == NULL) {
+            perror("open result file");
+            exit(1);
+        }
+
+        size_t text_size = read_file_size(fd_in);
+        printf("source: %ld bytes\n", text_size);
+
+        uint64_t* compressed = malloc(text_size);
+        memset(compressed, 0, text_size);
+
+        char text[text_size + 1];
+        int read_bytes = fread(text, sizeof(char), text_size, fd_in);
+        if (read_bytes == -1) {
+            perror("read");
+            exit(EXIT_FAILURE);
+        }
+
+        text[text_size] = '\0';
+
+        freq_t freq_table[FREQ_TABLE_SIZE] = {0};
+        build_freq_table(text, text_size, freq_table);
+
+        node_t* root = build_tree(freq_table);
+
+        code_t path = {0};
+        code_t codes_table[256] = {0};
+        build_prefix_codes(root, &path, codes_table);
+
+        // Write frequency table to the beginnig of the file
+        // printf("frequency table size: %ld bytes\n", FREQ_TABLE_SIZE * sizeof(freq_t));
+        size_t items_written = fwrite(freq_table, sizeof(freq_t), FREQ_TABLE_SIZE, fd_out);
+        if (items_written < FREQ_TABLE_SIZE) {
+            if (ferror(fd_out)) {
+                perror("write frequency table");
+            } else 
+                printf("Not all freqs were written %ld/%d\n", items_written, FREQ_TABLE_SIZE);
+            exit(1);
+        }
+
+        bits_src_t compressed_dest = {
+            .items = compressed,
+            .bits_off = 0,
+        };
+
+        for (size_t i = 0; i <= text_size; i++) {
+            char c = text[i];
+
+            code_t code = codes_table[(int)c];
+            write_bits(&compressed_dest, revert_bits(code.code, code.size), code.size);
+
+        //     printf("%c - ", c);
+        //     print_bits(code.code, code.size);
+        //     printf("\n");
+        }
+
+        size_t compressed_size = (compressed_dest.bits_off / 8) + 1;
+
+        printf("compressed data size: %ld bytes\n", compressed_size);
+        size_t bytes_written = fwrite(compressed, sizeof(uint8_t), compressed_size, fd_out);
+        if (bytes_written < compressed_size) {
+            if (ferror(fd_out)) {
+                perror("write compressed");
+            }
+            perror("Not all bytes were written");
+            exit(1);
+        }
+
+        // TODO: free
+
+        fclose(fd_in);
+        fclose(fd_out);
     }
-
-    // TODO: free the tree
-
-    free(compressed);
-
-    fclose(fd_out);
 
     // Decompress -------------------
-    fd_in = fopen("./result", "r");
-    if (fd_in == NULL) {
-        perror("open result file");
-        exit(1);
-    }
-
-    compressed_size = read_file_size(fd_in);
-
-    compressed = realloc(compressed, compressed_size);
-    assert(compressed != NULL && "malloc read compressed");
-    memset(compressed, 0, compressed_size);
-
-    read_bytes = fread(compressed, sizeof(char), compressed_size, fd_in);
-	if (read_bytes == -1) {
-	    perror("read");
-	    exit(EXIT_FAILURE);
-	}
-
-    printf("bytes read %ld\n", read_bytes);
-
-    bits_src_t read_src = {
-      .items = compressed,
-      .bits_off = 0,
-    };
-
-    node_t* curr_node = root;
-
-    uint64_t curr_bit = 0;
-
-    for (;;) {
-        read_bits(&read_src, &curr_bit, 1);
-
-        // printf("%ld", curr_bit);
-
-        curr_node = curr_bit ? curr_node->right : curr_node->left;
-        
-        if (!curr_node->left && !curr_node->right) {
-            char c = curr_node->c;
-            curr_node = root;
-
-            printf("%c", c);
-            if (c == '\0') {
-                return 0;
-            }
+    {
+        FILE* fd_in = fopen("./result", "r");
+        if (fd_in == NULL) {
+            perror("open result file");
+            exit(1);
         }
 
-        curr_bit = 0ULL;
-    }
+        size_t compressed_size = read_file_size(fd_in);
 
-    fclose(fd_in);
-    printf("\n");
+        uint8_t* compressed = malloc(compressed_size * 2);
+        assert(compressed != NULL && "malloc read compressed");
+        memset(compressed, 0, compressed_size);
+
+        size_t read_bytes = fread(compressed, sizeof(char), compressed_size, fd_in);
+        if (read_bytes == -1) {
+            perror("read");
+            exit(EXIT_FAILURE);
+        }
+
+        printf("bytes read %ld\n", read_bytes);
+
+        // Read frequency table;
+
+        freq_t freq_table[FREQ_TABLE_SIZE] = {0};
+        memcpy(freq_table, compressed, FREQ_TABLE_SIZE * sizeof(freq_t));
+
+        node_t* root = build_tree(freq_table);
+
+        bits_src_t read_src = {
+            .items = &compressed[FREQ_TABLE_SIZE * sizeof(freq_t)],
+            .bits_off = 0,
+        };
+
+        node_t* curr_node = root;
+
+        uint64_t curr_bit = 0;
+
+        for (;;) {
+            read_bits(&read_src, &curr_bit, 1);
+
+            // printf("%ld", curr_bit);
+
+            curr_node = curr_bit ? curr_node->right : curr_node->left;
+            
+            if (!curr_node->left && !curr_node->right) {
+                char c = curr_node->c;
+                curr_node = root;
+
+                printf("%c", c);
+                if (c == '\0') {
+                    return 0;
+                }
+            }
+
+            curr_bit = 0ULL;
+        }
+
+        fclose(fd_in);
+        printf("\n");
+    }
 
     return 0;
 }
