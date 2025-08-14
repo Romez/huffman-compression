@@ -7,6 +7,8 @@
 #include <assert.h>
 
 #define FREQ_TABLE_SIZE 256
+#define READ_BUF_SIZE 1024
+#define WRITE_BUF_SIZE 1024
 
 size_t compress(void* dest, size_t dest_size, char* src, size_t src_size);
 // void decompress(dest, dest_size, src, src_size);
@@ -22,7 +24,6 @@ struct node_t {
     uint8_t c;
 };
 
-// TODO: heap
 typedef struct {
     node_t* nodes[256];
     size_t size;
@@ -37,6 +38,30 @@ typedef struct {
     void* items;
     size_t bits_off;
 } bits_src_t;
+
+typedef struct {
+    void* mem;
+    size_t cap;
+    size_t off;
+} arena_t;
+
+void alloc_arena(arena_t* arena) {
+    arena->mem = malloc(arena->cap);
+    if (arena->mem == NULL) {
+        perror("arena");
+        exit(1);
+    }
+}
+
+void* alloc_arena_block(arena_t* arena, size_t block_size) {
+    uint8_t* bytes = (uint8_t*)arena->mem;
+    arena->off = arena->off + block_size;
+    return &bytes[arena->off];
+}
+
+void free_arena(arena_t* arena) {
+    free(arena->mem);
+}
 
 uint64_t revert_bits(uint64_t code, size_t size) {
     uint64_t result = 0;
@@ -83,8 +108,13 @@ void print_bits(uint64_t code, size_t size) {
     }
 }
 
-node_t* init_node() {
-    node_t* node = malloc(sizeof(node_t));
+bool is_leaf(node_t* node) {
+    return !node->left && !node->right;
+}
+
+node_t* init_node(arena_t* arena) {
+    node_t* node = alloc_arena_block(arena, sizeof(node_t));
+
     memset(node, 0, sizeof(node_t));
 
     return node;
@@ -109,24 +139,15 @@ size_t find_min_node_index(all_nodes_t* all_nodes) {
     return min_node_index;
 }
 
-void build_freq_table(char* text, size_t text_size, freq_t* freq_table) {
-    for (size_t i = 0; i <= text_size; i++) {
-        unsigned char c = text[i];
-        uint8_t node_index = (int)c;
-
-        freq_table[node_index]++;
-    }
-}
-
-node_t* build_tree(freq_t* freq_table) {
+node_t* build_tree(arena_t* arena, freq_t* freq_table) {
     all_nodes_t all_nodes = {
         .nodes = {0},
         .size = 0,
     };
 
-    for (int i = 0; i < 256; i++) {
+    for (int i = 0; i < FREQ_TABLE_SIZE; i++) {
         if (freq_table[i]) {
-            node_t* node = init_node();
+            node_t* node = init_node(arena);
 
             node->c = (char)i;
             node->weight = freq_table[i];
@@ -134,8 +155,6 @@ node_t* build_tree(freq_t* freq_table) {
             all_nodes.nodes[all_nodes.size++] = node;
         }
     }
-
-    // printf("node_index %d\n", node_index);
 
     while(all_nodes.size > 1) {
         size_t min_node_index1 = find_min_node_index(&all_nodes);
@@ -146,7 +165,7 @@ node_t* build_tree(freq_t* freq_table) {
         node_t* min_node2 = all_nodes.nodes[min_node_index2];
         all_nodes.nodes[min_node_index2] = NULL;
 
-        node_t* pair_node = init_node();
+        node_t* pair_node = init_node(arena);
         pair_node->left  = min_node1;
         pair_node->right = min_node2;
         pair_node->weight = min_node1->weight + min_node2->weight;
@@ -200,86 +219,82 @@ size_t read_file_size(FILE* fd) {
     return text_size;
 }
 
-void free_tree(node_t* node) {
-    if (node->left) {
-        free_tree(node->left);
-    }
-    
-    if (node->right) {
-        free_tree(node->right);
-    }
-    
-    free(node);
-}
-
 size_t compress(void* dest, size_t dest_size, char* src, size_t src_size) {
     return 0;
 }
 
-char* read_src_file(char* file_path, size_t* text_size) {
-    FILE *fd_src = fopen(file_path, "r");
-    if (fd_src == NULL) {
-        perror("open src file");
-        exit(1);
-    }
-
-    size_t n = read_file_size(fd_src);
-    // printf("source: %ld bytes\n", n);
-
-    char* src = malloc(n + 1);
-    if (src == NULL) {
-        perror("malloc text");
-        exit(1);
-    }
-
-    int read_bytes = fread(src, sizeof(char), n, fd_src);
-    if (read_bytes < n) {
-        perror("read");
-        exit(EXIT_FAILURE);
-    }
-
-    src[n] = '\0';
-
-    fclose(fd_src);
-
-    *text_size = n;
-
-    return src;
+void flush(FILE* fd, void* buf, size_t size, size_t n) {
+    do {
+        size_t items_written = fwrite(buf, size, n, fd);
+        if (items_written < n) {
+            if (ferror(fd)) {
+                perror("flush");
+                exit(1);
+            }
+        }
+        n -= items_written;
+    } while(n);
 }
 
 int main() {
-    // Compress ------------------
-
     {
-        FILE *fd_dest = fopen("result", "w+");
+        char* src_file_path = "./files/lorem.txt";
+        char* dest_file_path = "./files/compressed";
+
+        FILE *fd_dest = fopen(dest_file_path, "w+");
         if (fd_dest == NULL) {
             perror("open result file");
             exit(1);
         }
 
-        size_t text_size;
-        char* text = read_src_file("files/nska.utf.txt", &text_size);
+        FILE *fd_src = fopen(src_file_path, "r");
+        if (fd_src == NULL) {
+            perror("open src file");
+            exit(1);
+        }
 
-        // divide by 2 if > uint_8/uint_16
+        arena_t arena = {
+            .cap = 512 * sizeof(node_t),
+            .off = 0,
+        };
+        alloc_arena(&arena);
+
         freq_t freq_table[FREQ_TABLE_SIZE] = {0};
-        build_freq_table(text, text_size, freq_table);
+        freq_table[FREQ_TABLE_SIZE] = 1;
+        size_t text_size = 0;
 
-        node_t* root = build_tree(freq_table);
+        char read_buf[READ_BUF_SIZE];
+        size_t bytes_read = 0;
+
+        while((bytes_read = fread(read_buf, sizeof(char), READ_BUF_SIZE, fd_src))) {
+            if (bytes_read == -1) {
+                perror("read src");
+                exit(EXIT_FAILURE);
+            }
+
+            for (size_t i = 0; i <= bytes_read; i++) {
+                unsigned char c = read_buf[i];
+                uint8_t node_index = (int)c;
+
+                freq_table[node_index]++;
+            }
+
+            text_size += bytes_read;
+        }
+        
+        node_t* root = build_tree(&arena, freq_table);
         
         code_t path = {0};
         code_t codes_table[256] = {0};
         build_prefix_codes(root, &path, codes_table);
-        
+
+        printf("text size %ld bytes\n", text_size);
+
+        // Write text size
+        flush(fd_dest, &text_size, sizeof(text_size), 1);
+
         // Write frequency table to the beginnig of the file
-        size_t items_written = fwrite(freq_table, sizeof(freq_t), FREQ_TABLE_SIZE, fd_dest);
-        if (items_written < FREQ_TABLE_SIZE) {
-            if (ferror(fd_dest)) {
-                perror("write frequency table");
-            } else {
-                printf("Not all freqs were written %ld/%d\n", items_written, FREQ_TABLE_SIZE);
-            }
-            exit(1);
-        }
+        flush(fd_dest, freq_table, sizeof(freq_t), FREQ_TABLE_SIZE);
 
         uint64_t* compressed = malloc(text_size + 1 + (FREQ_TABLE_SIZE * sizeof(freq_t)));
         if (compressed == NULL) {
@@ -295,65 +310,90 @@ int main() {
         };
 
         size_t counter = FREQ_TABLE_SIZE * sizeof(freq_t) * 8;
-        printf("text_size %ld \n", text_size);
-        
-        for (size_t i = 0; i <= text_size; i++) {
-            uint64_t c = text[i];
 
-            code_t code = codes_table[(uint8_t)c];
-            write_bits(&compressed_dest, revert_bits(code.code, code.size), code.size);
+        fseek(fd_src, 0, SEEK_SET);
 
-            counter += code.size;
-            // printf("%c - ", c);
-            // print_bits(code.code, code.size);
-            // printf("\n");
+        while((bytes_read = fread(read_buf, sizeof(char), READ_BUF_SIZE, fd_src))) {
+            if (bytes_read == -1) {
+                perror("read src");
+                exit(EXIT_FAILURE);
+            }
+
+            for (size_t i = 0; i <= bytes_read; i++) {
+                unsigned char c = read_buf[i];
+                
+                code_t code = codes_table[(uint8_t)c];
+
+                write_bits(&compressed_dest, revert_bits(code.code, code.size), code.size);
+
+                counter += code.size;
+            }   
         }
+
         printf("written: %ld bits\n", counter);      
 
         size_t compressed_size = (compressed_dest.bits_off + 7) / 8;
 
         printf("compressed data size: %ld bytes\n", compressed_size);
-        size_t bytes_written = fwrite(compressed, sizeof(uint8_t), compressed_size, fd_dest);
-        if (bytes_written < compressed_size) {
-            if (ferror(fd_dest)) {
-                perror("write compressed");
-            }
-            perror("Not all bytes were written");
-            exit(1);
-        }
+        flush(fd_dest, compressed, sizeof(uint8_t), compressed_size);
 
-        free_tree(root);
+        free_arena(&arena);
 
         fclose(fd_dest);
+
+        fclose(fd_src);
     }
 
     printf("Decompress -------------------\n");
     // Decompress -------------------
     {
-        FILE* fd_in = fopen("result", "r");
-        if (fd_in == NULL) {
-            perror("open result file");
+        char* src_file_path = "./files/compressed";
+        char* dest_file_path = "./files/decompressed.txt";
+
+        FILE* fd_src = fopen(src_file_path, "r");
+        if (fd_src == NULL) {
+            perror("open compressed file");
             exit(1);
         }
 
-        size_t compressed_size = read_file_size(fd_in);
+        FILE* fd_dest = fopen(dest_file_path, "w+");
+        if (fd_dest == NULL) {
+            perror("open decompressed file");
+            exit(1);
+        }
+
+        size_t compressed_size = read_file_size(fd_src);
 
         void* compressed = malloc(compressed_size * 3);
         assert(compressed != NULL && "malloc read compressed");
         memset(compressed, 0, compressed_size);
 
-        size_t read_bytes = fread(compressed, sizeof(char), compressed_size, fd_in);
+        size_t text_size;
+        if (fread(&text_size, sizeof(size_t), 1, fd_src) < 1) {
+            perror("read text size");
+            exit(EXIT_FAILURE);
+        }
+
+        printf("text size: %ld bytes\n", text_size);
+
+        size_t read_bytes = fread(compressed, sizeof(char), compressed_size, fd_src);
         if (read_bytes == -1) {
             perror("read");
             exit(EXIT_FAILURE);
         }
+
+        arena_t arena = {
+            .cap = 512 * sizeof(node_t),
+            .off = 0,
+        };
+        alloc_arena(&arena);
 
         // Read frequency table;
 
         freq_t freq_table[FREQ_TABLE_SIZE] = {0};
         memcpy(freq_table, compressed, FREQ_TABLE_SIZE * sizeof(freq_t));
 
-        node_t* root = build_tree(freq_table);
+        node_t* root = build_tree(&arena, freq_table);
 
         bits_src_t read_src = {
             .items = &((uint8_t*)compressed)[FREQ_TABLE_SIZE * sizeof(freq_t)],
@@ -364,27 +404,36 @@ int main() {
 
         uint64_t curr_bit = 0;
 
-        for (;;) {
+        char write_buf[WRITE_BUF_SIZE];
+        size_t write_buf_len = 0;
+
+        size_t chars_read = 0;
+
+        while (chars_read < text_size) {
             read_bits(&read_src, &curr_bit, 1);
 
-            // printf("%ld", curr_bit);
-
             curr_node = curr_bit ? curr_node->right : curr_node->left;
-            
-            if (!curr_node->left && !curr_node->right) {
+
+            if (is_leaf(curr_node)) {
                 unsigned char c = curr_node->c;
-                curr_node = root;
 
-                printf("%c", c);
-                if (c == '\0') {
-                    return 0;
+                write_buf[write_buf_len++] = c;
+
+                if (write_buf_len == WRITE_BUF_SIZE) {
+                    flush(fd_dest, write_buf, sizeof(char), write_buf_len);
                 }
-            }
 
-            curr_bit = 0ULL;
+                chars_read++;
+
+                curr_node = root;
+            }
         }
 
-        fclose(fd_in);
+        flush(fd_dest, write_buf, sizeof(char), write_buf_len);
+
+        free_arena(&arena);
+
+        fclose(fd_src);
         printf("\n");
     }
 
