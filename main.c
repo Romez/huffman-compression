@@ -10,7 +10,7 @@
 #define READ_BUF_SIZE 1024
 #define WRITE_BUF_SIZE 1024
 
-size_t compress(void* dest, size_t dest_size, char* src, size_t src_size);
+// size_t compress(void* dest, size_t dest_size, char* src, size_t src_size);
 // void decompress(dest, dest_size, src, src_size);
 
 typedef uint32_t freq_t;
@@ -80,12 +80,16 @@ uint64_t revert_bits(uint64_t code, size_t size) {
 }
 
 void read_bits(bits_src_t* src, uint64_t* dest, size_t n) {
+    // printf("src off %ld\n", src->bits_off);
     int off = src->bits_off & 7;
     uint64_t mask = (1 << n) - 1;
 
     int item_index = src->bits_off >> 3;
     uint8_t* item = &((uint8_t*)src->items)[item_index];
-    uint64_t block = *(uint64_t*)item;
+    // uint64_t block = *(uint64_t*)item;
+
+    uint8_t block = *item;
+    *dest = 0UL;
 
     *dest = ((block >> off) & mask);
 
@@ -93,12 +97,39 @@ void read_bits(bits_src_t* src, uint64_t* dest, size_t n) {
 }
 
 void write_bits(bits_src_t* dest, uint64_t block, size_t n) {
-    uint8_t* items = &((uint8_t*)dest->items)[dest->bits_off >> 3];
-    uint64_t* item = (uint64_t*)items;
+    while(n) {
+        size_t item_index = dest->bits_off / 8;
+        uint8_t* items = (uint8_t*)dest->items;
+        uint8_t* item = &items[item_index];
 
-    int rem = dest->bits_off & 7;
-    *item |= (block << rem);
-    dest->bits_off += n;
+        size_t curr_item_off = dest->bits_off % 8; // % 64 // & ((1 << 6) - 1)
+
+        *item |= (block << curr_item_off);
+
+        size_t bits_avail = 8 - curr_item_off;
+
+        size_t bits_to_write = bits_avail >= n ? n : bits_avail;
+        dest->bits_off += bits_to_write;
+        block = block >> bits_to_write;
+        n -= bits_to_write;
+
+        // printf("item %.8b\n", *item);
+
+        // size_t item_index = dest->bits_off / 64; // >> 6
+        // uint64_t* items = (uint64_t*)dest->items;
+        // uint64_t* item = &items[item_index];
+
+        // size_t curr_item_off = dest->bits_off % 64; // % 64 // & ((1 << 6) - 1)
+
+        // *item |= (block << curr_item_off);
+
+        // size_t bits_avail = 64 - curr_item_off;
+
+        // size_t bits_to_write = bits_avail >= n ? n : bits_avail;
+        // dest->bits_off += bits_to_write;
+        // block = block >> bits_to_write;
+        // n -= bits_to_write;
+    }
 }
 
 void print_bits(uint64_t code, size_t size) {
@@ -130,25 +161,6 @@ void swap_nodes(node_t** nodes, size_t index1, size_t index2) {
     node_t* tmp = nodes[index1];
     nodes[index1] = nodes[index2];
     nodes[index2] = tmp;
-}
-
-size_t find_min_node_index(all_nodes_t* all_nodes) {
-    size_t min_node_index = 0;
-    while(all_nodes->nodes[min_node_index] == NULL && min_node_index < 256) {
-        min_node_index++;
-    }
-
-    for (size_t i = min_node_index + 1; i < 256; i++) {
-        node_t* node = all_nodes->nodes[i];
-        if (node != NULL) {
-            node_t* min_node = all_nodes->nodes[min_node_index];
-            if (node->weight < min_node->weight) {
-                min_node_index = i;
-            }
-        }
-    }
-
-    return min_node_index;
 }
 
 void push_node(all_nodes_t* all_nodes, node_t* node) {
@@ -228,8 +240,10 @@ node_t* build_tree(arena_t* arena, freq_t* freq_table) {
 
         push_node(&all_nodes, pair_node);
     }
-    
-    return pop_node(&all_nodes);
+
+    node_t* top = pop_node(&all_nodes);
+
+    return top;
 }
 
 void build_prefix_codes(node_t* root, code_t* path, code_t* codes_mapping) {
@@ -255,7 +269,10 @@ void build_prefix_codes(node_t* root, code_t* path, code_t* codes_mapping) {
             path->size--;
         }
     } else {
+        // printf("%c ", root->c);
         codes_mapping[(uint8_t)root->c] = *path;
+        // print_bits(path->code, path->size);
+        // printf("\n");
     }
         
     return;
@@ -283,7 +300,7 @@ int main() {
 
         printf("Compress %s\n", src_file_path);
 
-        FILE *fd_dest = fopen(dest_file_path, "w+");
+        FILE *fd_dest = fopen(dest_file_path, "w");
         if (fd_dest == NULL) {
             perror("open result file");
             exit(1);
@@ -300,7 +317,7 @@ int main() {
         freq_t freq_table[FREQ_TABLE_SIZE] = {0};
         size_t text_size = 0;
 
-        char read_buf[READ_BUF_SIZE];
+        uint8_t read_buf[READ_BUF_SIZE];
         size_t bytes_read = 0;
 
         while((bytes_read = fread(read_buf, 1, READ_BUF_SIZE, fd_src))) {
@@ -310,22 +327,19 @@ int main() {
             }
 
             for (size_t i = 0; i < bytes_read; i++) {
-                unsigned char c = read_buf[i];
-                uint8_t node_index = (uint8_t)c;
-
+                uint8_t node_index = read_buf[i];
                 freq_table[node_index]++;
             }
 
             text_size += bytes_read;
         }
-        
+
         node_t* root = build_tree(&arena, freq_table);
-        
+
+        // Build codes
         code_t path = {0};
         code_t codes_table[256] = {0};
         build_prefix_codes(root, &path, codes_table);
-
-        printf("text size %ld bytes\n", text_size);
 
         // Write text size
         flush(fd_dest, &text_size, sizeof(text_size), 1);
@@ -333,20 +347,15 @@ int main() {
         // Write frequency table to the beginnig of the file
         flush(fd_dest, freq_table, sizeof(freq_t), FREQ_TABLE_SIZE);
 
-        uint64_t* compressed = malloc(text_size * 2);
-        if (compressed == NULL) {
-            perror("malloc src");
-            exit(1);
-        }
+        // Write compressed data
+        fseek(fd_src, 0, SEEK_SET);
 
-        memset(compressed, 0, text_size);
-        
-        bits_src_t compressed_dest = {
-            .items = compressed,
+        uint8_t write_buf[WRITE_BUF_SIZE] = {0};
+
+        bits_src_t write_bits_buf = {
+            .items = write_buf,
             .bits_off = 0,
         };
-
-        fseek(fd_src, 0, SEEK_SET);
 
         while((bytes_read = fread(read_buf, 1, READ_BUF_SIZE, fd_src))) {
             if (bytes_read == -1) {
@@ -354,19 +363,27 @@ int main() {
                 exit(EXIT_FAILURE);
             }
 
-            for (size_t i = 0; i <= bytes_read; i++) {
-                unsigned char c = read_buf[i];
-                
-                code_t code = codes_table[(uint8_t)c];
+            for (size_t i = 0; i < bytes_read; i++) {
+                uint8_t c = read_buf[i];
 
-                write_bits(&compressed_dest, revert_bits(code.code, code.size), code.size);
+                code_t code = codes_table[c];
+
+                if ((write_bits_buf.bits_off / 8) > 0) {
+                    size_t bytes_size = write_bits_buf.bits_off / 8;
+                    flush(fd_dest, write_buf, 1, bytes_size);
+
+                    uint8_t tmp = write_buf[bytes_size];
+                    memset(write_buf, 0, WRITE_BUF_SIZE);
+                    
+                    write_buf[0] = tmp;
+                    write_bits_buf.bits_off = write_bits_buf.bits_off % 8;
+                }
+
+                write_bits(&write_bits_buf, revert_bits(code.code, code.size), code.size);
             }
         }
 
-        size_t compressed_size = (compressed_dest.bits_off + 7) / 8;
-
-        printf("compressed data size: %ld bytes\n", compressed_size);
-        flush(fd_dest, compressed, sizeof(uint8_t), compressed_size);
+        flush(fd_dest, write_buf, 1, (write_bits_buf.bits_off + 7) / 8);
 
         free_arena(&arena);
 
@@ -423,7 +440,6 @@ int main() {
         uint8_t read_buf[READ_BUF_SIZE];
         size_t bytes_read = 0;
 
-        printf("\n");
         do {
             bytes_read = fread(read_buf, 1, READ_BUF_SIZE, fd_src);
             if (bytes_read == -1) {
@@ -443,11 +459,12 @@ int main() {
                 curr_node = curr_bit ? curr_node->right : curr_node->left;
 
                 if (is_leaf(curr_node)) {
+                    // printf(" ");
                     char c = curr_node->c;
 
                     write_buf[write_buf_len++] = c;
 
-                    if (write_buf_len == READ_BUF_SIZE) {
+                    if (write_buf_len == WRITE_BUF_SIZE) {
                         flush(fd_dest, write_buf, 1, write_buf_len);
                         write_buf_len = 0;
                     }
@@ -459,6 +476,7 @@ int main() {
                 }
             }
         } while(bytes_read);
+        printf("\n");
 
         flush(fd_dest, write_buf, 1, write_buf_len);
 
