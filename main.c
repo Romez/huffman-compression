@@ -1,3 +1,4 @@
+#include <stddef.h>
 #include <stdio.h>
 #include <string.h>
 #include <stdlib.h>
@@ -5,6 +6,10 @@
 #include <stdint.h>
 #include <stdbool.h>
 #include <assert.h>
+#include <fcntl.h>
+#include <sys/mman.h>
+#include <sys/stat.h>
+#include <unistd.h>
 
 #define FREQ_TABLE_SIZE 256
 #define READ_BUF_SIZE 1024
@@ -48,7 +53,7 @@ arena_t alloc_arena(size_t cap) {
         perror("arena");
         exit(1);
     }
-    
+
     return (arena_t){
         .mem = mem,
         .cap = cap,
@@ -271,9 +276,17 @@ void flush(FILE* fd, void* buf, size_t size, size_t n) {
     } while(n);
 }
 
-void compress(char* src_file_path, char* dest_file_path) {
-    // printf("compress %s\n", src_file_path);
+size_t read_file_size(int fd) {
+    struct stat sb;
+    if (fstat(fd, &sb) == -1) {
+        perror("fstat");
+        close(fd);
+        exit(EXIT_FAILURE);
+    }
+    return sb.st_size;
+}
 
+void compress(char* src_file_path, char* dest_file_path) {
     FILE *fd_src = fopen(src_file_path, "r");
     if (fd_src == NULL) {
         perror("open src file");
@@ -348,7 +361,7 @@ void compress(char* src_file_path, char* dest_file_path) {
 
                 uint8_t tmp = write_buf[bytes_size];
                 memset(write_buf, 0, WRITE_BUF_SIZE);
-                
+
                 write_buf[0] = tmp;
                 write_bits_buf.bits_off = write_bits_buf.bits_off % 8;
             }
@@ -367,11 +380,14 @@ void compress(char* src_file_path, char* dest_file_path) {
 }
 
 void decompress(char* src_file_path, char* dest_file_path) {
-    FILE* fd_src = fopen(src_file_path, "r");
-    if (fd_src == NULL) {
-        perror("open compressed file");
+    int fd_src = open(src_file_path, O_RDONLY);
+    if (fd_src == -1) {
+        perror("decompress: open src file");
         exit(1);
     }
+
+    size_t src_file_size = read_file_size(fd_src);
+    void* src = mmap(NULL, src_file_size, PROT_READ, MAP_PRIVATE, fd_src, 0);
 
     FILE* fd_dest = fopen(dest_file_path, "w+");
     if (fd_dest == NULL) {
@@ -380,20 +396,14 @@ void decompress(char* src_file_path, char* dest_file_path) {
     }
 
     // read text size
-
-    size_t text_size;
-    if (fread(&text_size, sizeof(size_t), 1, fd_src) < 1) {
-        perror("read text size");
-        exit(EXIT_FAILURE);
-    }
+    size_t text_size = ((size_t*)src)[0];
+    src = (void*)((size_t*)src + 1);
 
     // Read frequency table;
-    freq_t freq_table[FREQ_TABLE_SIZE] = {0};
-    if (fread(freq_table, sizeof(freq_t), FREQ_TABLE_SIZE, fd_src) < FREQ_TABLE_SIZE) {
-        perror("read freq table");
-        exit(EXIT_FAILURE);
-    }
+    freq_t* freq_table = (freq_t*)src;
+    src = (void*)((freq_t*)src + FREQ_TABLE_SIZE);
 
+    // Allocate arena for tree
     arena_t arena = alloc_arena(512 * sizeof(node_t));
 
     node_t* root = build_tree(&arena, freq_table);
@@ -404,71 +414,52 @@ void decompress(char* src_file_path, char* dest_file_path) {
     char write_buf[WRITE_BUF_SIZE];
     size_t write_buf_len = 0;
 
-    uint8_t read_buf[READ_BUF_SIZE];
-    size_t bytes_read = 0;
+    size_t compressed_read = 0;
+    uint8_t* compressed = (uint8_t*)src;
 
-    do {
-        bytes_read = fread(read_buf, 1, READ_BUF_SIZE, fd_src);
-        if (bytes_read == -1) {
-            perror("read src");
-            exit(EXIT_FAILURE);
-        }
+    while (chars_read < text_size) {
+        uint64_t curr_byte = compressed[compressed_read++];
 
-        bits_src_t read_src = {
-            .items = read_buf,
-            .bits_off = 0,
-        };
+        for (size_t j = 0; j < 8; j++) {
+            uint8_t mask = 1 << j;
+            uint8_t curr_bit = curr_byte & mask;
 
-        for (size_t i = 0; i < bytes_read; i++) {
-            uint64_t curr_byte = 0;
-            read_bits(&read_src, &curr_byte, 8);
+            curr_node = curr_bit ? curr_node->right : curr_node->left;
 
-            for (size_t j = 0; j < 8; j++) {
-                uint8_t mask = 1 << j;
-                uint8_t curr_bit = curr_byte & mask;
+            if (is_leaf(curr_node)) {
+                char c = curr_node->c;
 
-                curr_node = curr_bit ? curr_node->right : curr_node->left;
+                write_buf[write_buf_len++] = c;
 
-                if (is_leaf(curr_node)) {
-                    char c = curr_node->c;
-
-                    write_buf[write_buf_len++] = c;
-
-                    if (write_buf_len == WRITE_BUF_SIZE) {
-                        flush(fd_dest, write_buf, 1, write_buf_len);
-                        write_buf_len = 0;
-                    }
-
-                    chars_read++;
-                    if (chars_read == text_size) break;
-                    
-                    curr_node = root;
+                if (write_buf_len == WRITE_BUF_SIZE) {
+                    flush(fd_dest, write_buf, 1, write_buf_len);
+                    write_buf_len = 0;
                 }
+
+                chars_read++;
+                if (chars_read == text_size) break;
+
+                curr_node = root;
             }
         }
-    } while(bytes_read);
+    }
 
     flush(fd_dest, write_buf, 1, write_buf_len);
 
     free_arena(&arena);
 
-    if (fclose(fd_src) != 0) {
-        perror("fclose src");
-        exit(1);
-    }
+    fclose(fd_dest);
 
-    if (fclose(fd_dest) != 0) {
-        perror("fclose dest");
-        exit(1);
-    }
+    munmap(src, src_file_size);
+    close(fd_src);
 }
 
 int main() {
-    compress("./files/pg11.txt", "./files/compressed");
+    compress("./files/nska.utf.txt", "./files/compressed");
 
     decompress("./files/compressed", "./files/decompressed.txt");
 
-    int exit_code = system("diff files/pg11.txt files/decompressed.txt");
+    int exit_code = system("diff files/nska.utf.txt files/decompressed.txt");
     printf("diff exit code %d\n", WEXITSTATUS(exit_code));
 
     return 0;
