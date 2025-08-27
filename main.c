@@ -262,31 +262,31 @@ node_t* build_tree(arena_t* arena, freq_t* freq_table) {
     return top;
 }
 
-void build_prefix_codes(node_t* root, code_t* path, code_t* codes_mapping) {
-    if (is_leaf(root)) {
-        codes_mapping[(uint8_t)root->c] = *path;
+void walk_prefix_codes(node_t* node, code_t code, code_t* codes_mapping) {
+    if (is_leaf(node)) {
+        codes_mapping[(uint8_t)node->c] = code;
     } else {
-        if (root->left != NULL) {
-            path->size++;
-            path->code = path->code << 1;
+        if (node->left) {
+            code_t l_code = {
+                .size = code.size + 1,
+                .code = code.code << 1,
+            };
 
-            build_prefix_codes(root->left, path, codes_mapping);
-
-            path->code = path->code >> 1;
-            path->size--;
+            walk_prefix_codes(node->left, l_code, codes_mapping);
         }
+        if (node->right) {
+            code_t r_code = {
+                .size = code.size + 1,
+                .code = (code.code << 1) | 1,
+            };
 
-        if (root->right != NULL) {
-            path->size++;
-            path->code = path->code << 1;
-            path->code |= 1;
-
-            build_prefix_codes(root->right, path, codes_mapping);
-
-            path->code = path->code >> 1;
-            path->size--;
+            walk_prefix_codes(node->right, r_code, codes_mapping);
         }
     }
+}
+
+void build_prefix_codes(node_t* root, code_t* codes_mapping) {
+    walk_prefix_codes(root, (code_t){0}, codes_mapping);
 }
 
 void flush(FILE* fd, void* buf, size_t size, size_t n) {
@@ -340,8 +340,6 @@ int tree_depth(node_t* node) {
     return 1 + max;
 }
 
-// 8 + 256 + 0 = 264
-
 void compress(char* src_file_path, char* dest_file_path) {
     // Open src and dest files
     FILE *fd_src = fopen(src_file_path, "r");
@@ -352,12 +350,11 @@ void compress(char* src_file_path, char* dest_file_path) {
 
     FILE *fd_dest = fopen(dest_file_path, "w+");
     if (fd_dest == NULL) {
-        perror("open result file");
+        perror("open dest file");
         exit(1);
     }
 
     size_t text_size = read_file_size(fd_src);
-
     printf("src size %ld bytes\n", text_size);
     
     uint8_t read_buf[READ_BUF_SIZE];
@@ -379,7 +376,23 @@ void compress(char* src_file_path, char* dest_file_path) {
     arena_t tree_arena = alloc_arena(512 * sizeof(node_t));
     node_t* root = build_tree(&tree_arena, freq_table);
     printf("Huffman tree depth: %d \n", tree_depth(root));
-    
+
+    // Build codes
+    code_t codes_table[256] = {0};
+    build_prefix_codes(root, codes_table);
+
+    // for (size_t i = 0; i < 256; i++) {
+    //     code_t code = codes_table[i];
+    //     if (code.size) {
+    //         printf("- %c ", i);
+    //         print_bits(code.code, code.size);
+    //         // char fmt[100];
+    //         // sprintf(fmt, "%%%db", code.size);
+    //         // printf(fmt, code.code);
+    //         printf("\n");
+    //     }
+    // }
+
     // Write text size to the file
     flush(fd_dest, &text_size, sizeof(text_size), 1);
 
@@ -392,24 +405,7 @@ void compress(char* src_file_path, char* dest_file_path) {
     }
     flush(fd_dest, leb_compressed, sizeof(uint8_t), leb_compressed_len);
 
-    // Build codes
-    code_t path = {0};
-    code_t codes_table[256] = {0};
-    build_prefix_codes(root, &path, codes_table);
-    
-    for (size_t i = 0; i < 256; i++) {
-        code_t code = codes_table[i];
-        if (code.size) {
-            printf("%c ", i);
-            print_bits(code.code, code.size);
-            // char fmt[100];
-            // sprintf(fmt, "%%%db", code.size);
-            // printf(fmt, code.code);
-            printf("\n");
-        }
-    }
-
-    // Write compressed data
+    // Write compressed text
     fseek(fd_src, 0, SEEK_SET);
 
     uint8_t write_buf[WRITE_BUF_SIZE] = {0};
@@ -444,7 +440,7 @@ void compress(char* src_file_path, char* dest_file_path) {
             write_bits(&write_bits_buf, revert_bits(code.code, code.size), code.size);
         }
     }
-    
+
     flush(fd_dest, write_buf, 1, (write_bits_buf.bits_off + 7) / 8);
 
     free_arena(&tree_arena);
@@ -487,9 +483,6 @@ void decode_text(FILE* fd_src, FILE* fd_dest, node_t* root, size_t text_size) {
 
     char write_buf[WRITE_BUF_SIZE];
     size_t write_buf_len = 0;
-
-    //uint8_t read_buf[READ_BUF_SIZE];
-    //size_t bytes_read = 0;
 
     while(true) {
         uint8_t curr_byte = fgetc(fd_src);     
@@ -564,15 +557,11 @@ void decompress(char* src_file_path, char* dest_file_path) {
 }
 
 int main() {
-    // compress("./files/pg2701.txt", "./files/compressed");
-    // compress("./files/pg84.txt", "./files/compressed");
-    compress("./files/7.txt", "./files/compressed");
+    compress("./files/pg11.txt", "./files/compressed");
 
     decompress("./files/compressed", "./files/decompressed.txt");
 
-    // int exit_code = system("diff files/pg2701.txt files/decompressed.txt");
-    // int exit_code = system("diff files/pg84.txt files/decompressed.txt");
-    int exit_code = system("diff files/7.txt files/decompressed.txt");
+    int exit_code = system("diff files/pg11.txt files/decompressed.txt");
     printf("diff exit code %d\n", WEXITSTATUS(exit_code));
 
     return 0;
