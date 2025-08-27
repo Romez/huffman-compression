@@ -136,13 +136,25 @@ void write_bits(bits_src_t* dest, uint64_t block, size_t n) {
     }
 }
 
+void print_bits(uint64_t code, size_t size) {
+    uint64_t mask = 1ULL << (size - 1);
+
+    for (size_t i = 0; i < size; i++) {
+        if (code & mask) {
+            printf("1");
+        } else {
+            printf("0");
+        }
+        mask = mask >> 1;
+    }
+}
+
 bool is_leaf(node_t* node) {
-    return !node->left && !node->right;
+    return node->left == NULL && node->right == NULL;
 }
 
 node_t* init_node(arena_t* arena) {
     node_t* node = alloc_arena_block(arena, sizeof(node_t));
-
     memset(node, 0, sizeof(node_t));
 
     return node;
@@ -217,6 +229,19 @@ node_t* build_tree(arena_t* arena, freq_t* freq_table) {
 
             push_node(&all_nodes, node);
         }
+    }
+    
+    if (all_nodes.size == 1) {
+        node_t* root = init_node(arena);
+        node_t* left_node = pop_node(&all_nodes);
+        node_t* right_node = init_node(arena);
+
+        root->left = left_node;
+        root->right = right_node;
+        
+        root->weight = left_node->weight;
+  
+        return root;
     }
 
     while (all_nodes.size > 1) {
@@ -302,6 +327,20 @@ error:
     exit(1);
 }
 
+int tree_depth(node_t* node) {
+    if (is_leaf(node)) {
+        return 0;
+    }
+    
+    int left_depth = tree_depth(node->left);
+    int right_depth = tree_depth(node->right);
+    
+    int max = left_depth < right_depth ? right_depth : left_depth;
+
+    return 1 + max;
+}
+
+// 8 + 256 + 0 = 264
 
 void compress(char* src_file_path, char* dest_file_path) {
     // Open src and dest files
@@ -319,6 +358,8 @@ void compress(char* src_file_path, char* dest_file_path) {
 
     size_t text_size = read_file_size(fd_src);
 
+    printf("src size %ld bytes\n", text_size);
+    
     uint8_t read_buf[READ_BUF_SIZE];
     size_t bytes_read = 0;
 
@@ -337,7 +378,8 @@ void compress(char* src_file_path, char* dest_file_path) {
     // Allocate arena for tree
     arena_t tree_arena = alloc_arena(512 * sizeof(node_t));
     node_t* root = build_tree(&tree_arena, freq_table);
-
+    printf("Huffman tree depth: %d \n", tree_depth(root));
+    
     // Write text size to the file
     flush(fd_dest, &text_size, sizeof(text_size), 1);
 
@@ -354,6 +396,18 @@ void compress(char* src_file_path, char* dest_file_path) {
     code_t path = {0};
     code_t codes_table[256] = {0};
     build_prefix_codes(root, &path, codes_table);
+    
+    for (size_t i = 0; i < 256; i++) {
+        code_t code = codes_table[i];
+        if (code.size) {
+            printf("%c ", i);
+            print_bits(code.code, code.size);
+            // char fmt[100];
+            // sprintf(fmt, "%%%db", code.size);
+            // printf(fmt, code.code);
+            printf("\n");
+        }
+    }
 
     // Write compressed data
     fseek(fd_src, 0, SEEK_SET);
@@ -390,7 +444,7 @@ void compress(char* src_file_path, char* dest_file_path) {
             write_bits(&write_bits_buf, revert_bits(code.code, code.size), code.size);
         }
     }
-
+    
     flush(fd_dest, write_buf, 1, (write_bits_buf.bits_off + 7) / 8);
 
     free_arena(&tree_arena);
@@ -410,17 +464,20 @@ size_t decode_file_size(FILE* fd) {
 }
 
 void decode_freq_table(FILE* fd, freq_t* freq_table) {
+    // int sum_len = 0;
     for (size_t i = 0; i < FREQ_TABLE_SIZE; i++) {
         uint8_t leb_src[8] = {0};
 
-        fread(leb_src, sizeof(uint8_t), 8, fd);
+        int read_bytes = fread(leb_src, 1, 8, fd);
 
         uint64_t freq;
         size_t val_len = leb_decode(leb_src, &freq);
+        // sum_len += val_len;
         freq_table[i] = freq;
-
-        fseek(fd, val_len - 8, SEEK_CUR);
+        
+        fseek(fd, val_len - read_bytes, SEEK_CUR);
     }
+    // printf("freq_table sum val_len %d\n", sum_len);
 }
 
 void decode_text(FILE* fd_src, FILE* fd_dest, node_t* root, size_t text_size) {
@@ -431,43 +488,42 @@ void decode_text(FILE* fd_src, FILE* fd_dest, node_t* root, size_t text_size) {
     char write_buf[WRITE_BUF_SIZE];
     size_t write_buf_len = 0;
 
-    uint8_t read_buf[READ_BUF_SIZE];
-    size_t bytes_read = 0;
+    //uint8_t read_buf[READ_BUF_SIZE];
+    //size_t bytes_read = 0;
 
-    do {
-        bytes_read = fread(read_buf, 1, READ_BUF_SIZE, fd_src);
-        if (ferror(fd_src)) {
-            perror("read src");
+    while(true) {
+        uint8_t curr_byte = fgetc(fd_src);     
+        if(ferror(fd_src)) {
+            perror("fgetc");
             exit(1);
         }
+        
+        for (size_t j = 0; j < 8; j++) {
+            uint8_t mask = 1 << j;
+            uint8_t curr_bit = curr_byte & mask;
 
-        for (size_t i = 0; i < bytes_read; i++) {
-            uint8_t curr_byte = read_buf[i];
+            curr_node = curr_bit ? curr_node->right : curr_node->left;
 
-            for (size_t j = 0; j < 8; j++) {
-                uint8_t mask = 1 << j;
-                uint8_t curr_bit = curr_byte & mask;
+            if (is_leaf(curr_node)) {
+                char c = curr_node->c;
 
-                curr_node = curr_bit ? curr_node->right : curr_node->left;
+                write_buf[write_buf_len++] = c;
 
-                if (is_leaf(curr_node)) {
-                    char c = curr_node->c;
-
-                    write_buf[write_buf_len++] = c;
-
-                    if (write_buf_len >= WRITE_BUF_SIZE) {
-                        flush(fd_dest, write_buf, 1, write_buf_len);
-                        write_buf_len = 0;
-                    }
-
-                    chars_read++;
-                    if (chars_read == text_size) break;
-
-                    curr_node = root;
+                if (write_buf_len >= WRITE_BUF_SIZE) {
+                    flush(fd_dest, write_buf, 1, write_buf_len);
+                    write_buf_len = 0;
                 }
+
+                chars_read++;
+                if (chars_read >= text_size) break;
+
+                curr_node = root;
             }
         }
-    } while(bytes_read);
+        
+        if (chars_read >= text_size) break;
+    }
+    
     flush(fd_dest, write_buf, 1, write_buf_len);
 }
 
@@ -483,11 +539,18 @@ void decompress(char* src_file_path, char* dest_file_path) {
         perror("open decompressed file");
         exit(1);
     }
+    
+    size_t compressed_size = read_file_size(fd_src);
+    printf("cmp size %ld bytes\n", compressed_size);
 
     size_t text_size = decode_file_size(fd_src);
 
     freq_t freq_table[FREQ_TABLE_SIZE] = {0};
+    int p1 = ftell(fd_src);
     decode_freq_table(fd_src, freq_table);
+    int p2 = ftell(fd_src);
+    
+    printf("freq cmp %d\n", p2 - p1);
 
     arena_t tree_arena = alloc_arena(512 * sizeof(node_t));
     node_t* root = build_tree(&tree_arena, freq_table);
@@ -501,11 +564,15 @@ void decompress(char* src_file_path, char* dest_file_path) {
 }
 
 int main() {
-    compress("./files/pg11.txt", "./files/compressed");
+    // compress("./files/pg2701.txt", "./files/compressed");
+    // compress("./files/pg84.txt", "./files/compressed");
+    compress("./files/7.txt", "./files/compressed");
 
     decompress("./files/compressed", "./files/decompressed.txt");
 
-    int exit_code = system("diff files/pg11.txt files/decompressed.txt");
+    // int exit_code = system("diff files/pg2701.txt files/decompressed.txt");
+    // int exit_code = system("diff files/pg84.txt files/decompressed.txt");
+    int exit_code = system("diff files/7.txt files/decompressed.txt");
     printf("diff exit code %d\n", WEXITSTATUS(exit_code));
 
     return 0;
