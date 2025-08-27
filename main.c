@@ -340,20 +340,7 @@ int tree_depth(node_t* node) {
     return 1 + max;
 }
 
-void compress(char* src_file_path, char* dest_file_path) {
-    // Open src and dest files
-    FILE *fd_src = fopen(src_file_path, "r");
-    if (fd_src == NULL) {
-        perror("open src file");
-        exit(1);
-    }
-
-    FILE *fd_dest = fopen(dest_file_path, "w+");
-    if (fd_dest == NULL) {
-        perror("open dest file");
-        exit(1);
-    }
-
+void compress(FILE *fd_src, FILE *fd_dest) {
     size_t text_size = read_file_size(fd_src);
     printf("src size %ld bytes\n", text_size);
     
@@ -441,10 +428,6 @@ void compress(char* src_file_path, char* dest_file_path) {
     flush(fd_dest, write_buf, 1, (write_bits_buf.bits_off + 7) / 8);
 
     free_arena(&tree_arena);
-
-    fclose(fd_dest);
-
-    fclose(fd_src);
 }
 
 size_t decode_file_size(FILE* fd) {
@@ -517,19 +500,7 @@ void decode_text(FILE* fd_src, FILE* fd_dest, node_t* root, size_t text_size) {
     flush(fd_dest, write_buf, 1, write_buf_len);
 }
 
-void decompress(char* src_file_path, char* dest_file_path) {
-    FILE* fd_src = fopen(src_file_path, "r");
-    if (fd_src == NULL) {
-        perror("open compressed file");
-        exit(1);
-    }
-
-    FILE* fd_dest = fopen(dest_file_path, "w+");
-    if (fd_dest == NULL) {
-        perror("open decompressed file");
-        exit(1);
-    }
-    
+void decompress(FILE* fd_src, FILE* fd_dest) {
     size_t compressed_size = read_file_size(fd_src);
     printf("cmp size %ld bytes\n", compressed_size);
 
@@ -548,9 +519,6 @@ void decompress(char* src_file_path, char* dest_file_path) {
     decode_text(fd_src, fd_dest, root, text_size);
 
     free_arena(&tree_arena);
-
-    fclose(fd_src);
-    fclose(fd_dest);
 }
 
 int main() {
@@ -560,8 +528,41 @@ int main() {
 
     // --------------------
 
-    compress(src_file_path, compressed_file_path);
-    decompress(compressed_file_path, decompressed_file_path);
+    FILE *compress_src = fopen(src_file_path, "r");
+    if (compress_src == NULL) {
+        perror("open src file");
+        exit(1);
+    }
+
+    FILE *compress_dest = fopen(compressed_file_path, "w+");
+    if (compress_dest == NULL) {
+        perror("open dest file");
+        exit(1);
+    }
+
+    compress(compress_src, compress_dest);
+
+    fclose(compress_src);
+    fclose(compress_dest);
+
+    // --------------------
+
+    FILE* decompress_src = fopen(compressed_file_path, "r");
+    if (decompress_src == NULL) {
+        perror("open compressed file");
+        exit(1);
+    }
+
+    FILE* decompress_dest = fopen(decompressed_file_path, "w+");
+    if (decompress_dest == NULL) {
+        perror("open decompressed file");
+        exit(1);
+    }
+
+    decompress(decompress_src, decompress_dest);
+
+    fclose(decompress_src);
+    fclose(decompress_dest);
 
     // ---------------------
 
