@@ -286,6 +286,7 @@ void walk_prefix_codes(node_t* node, code_t code, code_t* codes_mapping) {
 }
 
 void build_prefix_codes(node_t* root, code_t* codes_mapping) {
+    memset(codes_mapping, 0, sizeof(code_t) * 256);
     walk_prefix_codes(root, (code_t){0}, codes_mapping);
 }
 
@@ -340,24 +341,78 @@ int tree_depth(node_t* node) {
     return 1 + max;
 }
 
-void compress(FILE *fd_src, FILE *fd_dest) {
-    size_t text_size = read_file_size(fd_src);
-    printf("src size %ld bytes\n", text_size);
-    
+void build_freq_table(FILE* fd, freq_t* freq_table) {
+    memset(freq_table, 0, sizeof(freq_t) * FREQ_TABLE_SIZE);
+
     uint8_t read_buf[READ_BUF_SIZE];
     size_t bytes_read = 0;
 
-    freq_t freq_table[FREQ_TABLE_SIZE] = {0};
-    while((bytes_read = fread(read_buf, 1, READ_BUF_SIZE, fd_src)) > 0) {
+    while((bytes_read = fread(read_buf, 1, READ_BUF_SIZE , fd)) > 0) {
         for (size_t i = 0; i < bytes_read; i++) {
             uint8_t node_index = read_buf[i];
             freq_table[node_index]++;
         }
     }
-    if (ferror(fd_src)) {
+    if (ferror(fd)) {
         perror("read src");
         exit(1);
     }
+
+    fseek(fd, 0, SEEK_SET);
+}
+
+size_t compress_freq_table(freq_t* freq_table, uint8_t* leb_compressed) {
+    size_t leb_compressed_len = 0;
+    for (size_t i = 0; i < FREQ_TABLE_SIZE; i++) {
+        freq_t freq = freq_table[i];
+        leb_compressed_len += leb_encode(&leb_compressed[leb_compressed_len], freq);
+    }
+    return leb_compressed_len;
+}
+
+void compress_text(FILE* fd_src, FILE* fd_dest, code_t* codes_table) {
+    uint8_t write_buf[WRITE_BUF_SIZE] = {0};
+    bits_src_t write_bits_buf = {
+        .items = write_buf,
+        .bits_off = 0,
+    };
+
+    while(true) {
+        int c = fgetc(fd_src);
+        if (c == EOF) {
+            if (feof(fd_src)) {
+                break;
+            } else if (ferror(fd_src)) {
+                perror("read src");
+                exit(1);
+            }
+        }
+
+        code_t code = codes_table[c];
+        size_t bytes_size = write_bits_buf.bits_off / 8;
+
+        if (bytes_size > WRITE_BUF_SIZE - 8) {
+            flush(fd_dest, write_buf, 1, bytes_size);
+
+            uint8_t tmp = write_buf[bytes_size];
+            memset(write_buf, 0, WRITE_BUF_SIZE);
+
+            write_buf[0] = tmp;
+            write_bits_buf.bits_off = write_bits_buf.bits_off % 8;
+        }
+
+        write_bits(&write_bits_buf, revert_bits(code.code, code.size), code.size);
+    }
+
+    flush(fd_dest, write_buf, 1, (write_bits_buf.bits_off + 7) / 8);
+}
+
+void compress(FILE *fd_src, FILE *fd_dest) {
+    size_t text_size = read_file_size(fd_src);
+    printf("src size %ld bytes\n", text_size);
+
+    freq_t freq_table[FREQ_TABLE_SIZE] = {0};
+    build_freq_table(fd_src, freq_table);
 
     // Allocate arena for tree
     arena_t tree_arena = alloc_arena(512 * sizeof(node_t));
@@ -365,67 +420,18 @@ void compress(FILE *fd_src, FILE *fd_dest) {
     printf("Huffman tree depth: %d \n", tree_depth(root));
 
     // Build codes
-    code_t codes_table[256] = {0};
+    code_t codes_table[256];
     build_prefix_codes(root, codes_table);
-
-    // for (size_t i = 0; i < 256; i++) {
-    //     code_t code = codes_table[i];
-    //     if (code.size) {
-    //         printf("- %c ", i);
-    //         print_bits(code.code, code.size);
-    //         printf("\n");
-    //     }
-    // }
 
     // Write text size to the file
     flush(fd_dest, &text_size, sizeof(text_size), 1);
 
     // Write frequency table to the of the file
-    uint8_t leb_compressed[256 * sizeof(code_t)];
-    size_t leb_compressed_len = 0;
-    for (size_t i = 0; i < FREQ_TABLE_SIZE; i++) {
-        freq_t freq = freq_table[i];
-        leb_compressed_len += leb_encode(&leb_compressed[leb_compressed_len], freq);
-    }
-    flush(fd_dest, leb_compressed, sizeof(uint8_t), leb_compressed_len);
+    uint8_t compressed_freq_table[256 * sizeof(code_t)];
+    size_t compressed_freq_table_size = compress_freq_table(freq_table, compressed_freq_table); 
+    flush(fd_dest, compressed_freq_table, sizeof(uint8_t), compressed_freq_table_size);
 
-    // Write compressed text
-    fseek(fd_src, 0, SEEK_SET);
-
-    uint8_t write_buf[WRITE_BUF_SIZE] = {0};
-
-    bits_src_t write_bits_buf = {
-        .items = write_buf,
-        .bits_off = 0,
-    };
-
-    while((bytes_read = fread(read_buf, 1, READ_BUF_SIZE, fd_src))) {
-        if (bytes_read == -1) {
-            perror("read src");
-            exit(1);
-        }
-
-        for (size_t i = 0; i < bytes_read; i++) {
-            uint8_t c = read_buf[i];
-
-            code_t code = codes_table[c];
-
-            size_t bytes_size = write_bits_buf.bits_off / 8;
-            if (bytes_size >= WRITE_BUF_SIZE - 1) {
-                flush(fd_dest, write_buf, 1, bytes_size);
-
-                uint8_t tmp = write_buf[bytes_size];
-                memset(write_buf, 0, WRITE_BUF_SIZE);
-
-                write_buf[0] = tmp;
-                write_bits_buf.bits_off = write_bits_buf.bits_off % 8;
-            }
-
-            write_bits(&write_bits_buf, revert_bits(code.code, code.size), code.size);
-        }
-    }
-
-    flush(fd_dest, write_buf, 1, (write_bits_buf.bits_off + 7) / 8);
+    compress_text(fd_src, fd_dest, codes_table);
 
     free_arena(&tree_arena);
 }
