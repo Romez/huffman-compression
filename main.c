@@ -386,9 +386,6 @@ void compress(char* src_file_path, char* dest_file_path) {
     //     if (code.size) {
     //         printf("- %c ", i);
     //         print_bits(code.code, code.size);
-    //         // char fmt[100];
-    //         // sprintf(fmt, "%%%db", code.size);
-    //         // printf(fmt, code.code);
     //         printf("\n");
     //     }
     // }
@@ -557,11 +554,21 @@ void decompress(char* src_file_path, char* dest_file_path) {
 }
 
 int main() {
-    compress("./files/pg11.txt", "./files/compressed");
+    char* src_file_path = "./files/nska.utf.txt";
+    char* compressed_file_path = "./files/compressed";
+    char* decompressed_file_path = "./files/decompressed.txt";
 
-    decompress("./files/compressed", "./files/decompressed.txt");
+    // --------------------
 
-    int exit_code = system("diff files/pg11.txt files/decompressed.txt");
+    compress(src_file_path, compressed_file_path);
+    decompress(compressed_file_path, decompressed_file_path);
+
+    // ---------------------
+
+    char diff_cmd[100];
+    sprintf(diff_cmd, "diff %s %s", src_file_path, decompressed_file_path);
+
+    int exit_code = system(diff_cmd);
     printf("diff exit code %d\n", WEXITSTATUS(exit_code));
 
     return 0;
