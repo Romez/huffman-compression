@@ -1,2 +1,2 @@
-comp: main.c
-	gcc -Wall main.c -o main
+huff: main.c
+	gcc -Wall -g -fsanitize=address main.c -o main

@@ -573,7 +573,7 @@ int main() {
     // ---------------------
 
     char diff_cmd[100];
-    sprintf(diff_cmd, "diff %s %s", src_file_path, decompressed_file_path);
+    snprintf(diff_cmd, 100, "diff %s %s", src_file_path, decompressed_file_path);
 
     int exit_code = system(diff_cmd);
     printf("diff exit code %d\n", WEXITSTATUS(exit_code));
