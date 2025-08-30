@@ -6,16 +6,19 @@
 #include <stdint.h>
 #include <stdbool.h>
 #include <assert.h>
+#include <limits.h>
 
 #define FREQ_TABLE_SIZE 256
 #define READ_BUF_SIZE 1024
 #define WRITE_BUF_SIZE 1024
+#define MAX_TREE_DEPTH 16
 
 typedef uint64_t freq_t;
 
 typedef struct node_t node_t;
 
 struct node_t {
+    node_t* parent;
     node_t* left;
     node_t* right;
     int weight;
@@ -42,6 +45,11 @@ typedef struct {
     size_t cap;
     size_t off;
 } arena_t;
+
+typedef struct {
+    node_t* node;
+    size_t depth;
+} node_depth_t;
 
 size_t leb_encode(uint8_t* arr, uint64_t n) {
     uint64_t group_mask = 0x7f;
@@ -153,6 +161,88 @@ bool is_leaf(node_t* node) {
     return node->left == NULL && node->right == NULL;
 }
 
+int tree_depth(node_t* node) {
+    if (is_leaf(node)) {
+        return 0;
+    }
+    
+    int left_depth = tree_depth(node->left);
+    int right_depth = tree_depth(node->right);
+    
+    int max = left_depth < right_depth ? right_depth : left_depth;
+
+    return 1 + max;
+}
+
+node_depth_t find_deepest_node(node_t* node, size_t depth, size_t max_depth) {
+    if (is_leaf(node)) {
+        return (node_depth_t) {
+            .node = node,
+            .depth = depth,
+        };
+    }
+
+    node_depth_t left_node = find_deepest_node(node->left, depth + 1, max_depth);
+    node_depth_t right_node = find_deepest_node(node->right, depth + 1, max_depth);
+
+    size_t ldepth = left_node.depth;
+    size_t rdepth = right_node.depth;
+
+    if (max_depth < ldepth) ldepth = 0;
+    if (max_depth < rdepth) rdepth = 0;
+
+    if ((max_depth - ldepth) < (max_depth - rdepth)) {
+        return left_node;
+    } else {
+        return right_node;
+    }
+}
+
+node_depth_t deepest_node(node_t* root, size_t max_depth) {
+    node_depth_t deepest_node = find_deepest_node(root, 0, max_depth);
+    return deepest_node;
+}
+
+void reduce_tree_depth(node_t* root, size_t max_depth) {
+    while(true) {
+        node_depth_t deepest = deepest_node(root, INT_MAX);
+        if (deepest.depth <= max_depth) {
+            return;
+        }
+
+        assert(deepest.depth > 2);
+
+        // Cut the leaf
+        node_t* p1 = deepest.node->parent;
+        node_t* p2 = p1->parent;
+        node_t* r1 = p1->right;
+
+        if (p2->left == p1) {
+            p2->left = r1;
+        } else if (p2->right == p1) {
+            p2->right = r1;
+        } else {
+            assert(NULL && "Unreachable");
+        }
+        r1->parent = p2;
+
+        // Attach the leaf 
+        node_depth_t nearest = deepest_node(root, max_depth - 1);
+
+        node_t* p3 = nearest.node->parent;
+        if (p3->left == nearest.node) {
+            p3->left = p1;
+        } else {
+            p3->right = p1;
+        }
+
+        p1->parent = p3;
+
+        p1->right = nearest.node;
+        nearest.node->parent = p1;
+    }
+}
+
 node_t* init_node(arena_t* arena) {
     node_t* node = alloc_arena_block(arena, sizeof(node_t));
     memset(node, 0, sizeof(node_t));
@@ -240,6 +330,9 @@ node_t* build_tree(arena_t* arena, freq_t* freq_table) {
         root->right = right_node;
         
         root->weight = left_node->weight;
+        
+        left_node->parent = root;
+        right_node->parent = root;
   
         return root;
     }
@@ -254,10 +347,18 @@ node_t* build_tree(arena_t* arena, freq_t* freq_table) {
 
         pair_node->weight = min_node_1->weight + min_node_2->weight;
 
+        min_node_1->parent = pair_node;
+        min_node_2->parent = pair_node;
+        
         push_node(&all_nodes, pair_node);
     }
 
     node_t* top = pop_node(&all_nodes);
+
+    printf("Huffman tree depth: %d \n", tree_depth(top));
+    // Reduce the height of the tree
+    reduce_tree_depth(top, MAX_TREE_DEPTH);
+    printf("Balanced Huffman tree depth: %d \n", tree_depth(top));
 
     return top;
 }
@@ -326,19 +427,6 @@ size_t read_file_size(FILE* fd) {
 error:
     fclose(fd);
     exit(1);
-}
-
-int tree_depth(node_t* node) {
-    if (is_leaf(node)) {
-        return 0;
-    }
-    
-    int left_depth = tree_depth(node->left);
-    int right_depth = tree_depth(node->right);
-    
-    int max = left_depth < right_depth ? right_depth : left_depth;
-
-    return 1 + max;
 }
 
 void build_freq_table(FILE* fd, freq_t* freq_table) {
@@ -417,11 +505,16 @@ void compress(FILE *fd_src, FILE *fd_dest) {
     // Allocate arena for tree
     arena_t tree_arena = alloc_arena(512 * sizeof(node_t));
     node_t* root = build_tree(&tree_arena, freq_table);
-    printf("Huffman tree depth: %d \n", tree_depth(root));
-
+    
     // Build codes
     code_t codes_table[256];
     build_prefix_codes(root, codes_table);
+    // for (size_t i = 0; i < 256; i++) {
+    //     if (codes_table[i].size) {
+    //         print_bits(codes_table[i].code, codes_table[i].size);
+    //         printf("\n");
+    //     }
+    // }
 
     // Write text size to the file
     flush(fd_dest, &text_size, sizeof(text_size), 1);
@@ -471,12 +564,12 @@ void decode_text(FILE* fd_src, FILE* fd_dest, node_t* root, size_t text_size) {
     size_t write_buf_len = 0;
 
     while(true) {
-        uint8_t curr_byte = fgetc(fd_src);     
+        uint8_t curr_byte = fgetc(fd_src);
         if(ferror(fd_src)) {
             perror("fgetc");
             exit(1);
         }
-        
+
         for (size_t j = 0; j < 8; j++) {
             uint8_t mask = 1 << j;
             uint8_t curr_bit = curr_byte & mask;
@@ -502,7 +595,7 @@ void decode_text(FILE* fd_src, FILE* fd_dest, node_t* root, size_t text_size) {
         
         if (chars_read >= text_size) break;
     }
-    
+
     flush(fd_dest, write_buf, 1, write_buf_len);
 }
 
@@ -516,7 +609,6 @@ void decompress(FILE* fd_src, FILE* fd_dest) {
     int p1 = ftell(fd_src);
     decode_freq_table(fd_src, freq_table);
     int p2 = ftell(fd_src);
-    
     printf("freq cmp %d\n", p2 - p1);
 
     arena_t tree_arena = alloc_arena(512 * sizeof(node_t));
@@ -528,7 +620,7 @@ void decompress(FILE* fd_src, FILE* fd_dest) {
 }
 
 int main() {
-    char* src_file_path = "./files/nska.utf.txt";
+    char* src_file_path = "./files/lorem.txt";
     char* compressed_file_path = "./files/compressed";
     char* decompressed_file_path = "./files/decompressed.txt";
 
